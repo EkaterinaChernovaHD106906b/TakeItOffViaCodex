@@ -15,50 +15,105 @@ const PokerPlayerStateScript := preload("res://scripts/game/PokerPlayerState.gd"
 const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
 
 var player := PokerPlayerState.new("You")
-var opponent := PokerPlayerState.new("Opponent")
-var ai := PokerAI.new()
+var opponent := PokerPlayerState.new("AI 1")
+var opponents: Array[PokerPlayerState] = [
+	opponent,
+	PokerPlayerState.new("AI 2"),
+	PokerPlayerState.new("AI 3"),
+]
+var ais: Array[PokerAI] = [
+	PokerAI.new(),
+	PokerAI.new(),
+	PokerAI.new(),
+]
 var deck := Deck.new()
 var community_cards: Array[CardData] = []
 var phase := PokerRules.Phase.PRE_FLOP
 var pot := 0
 var current_bet := 0
+var blinds_posted := false
+var awaiting_player_response := false
+var big_blind_opponent_index := 0
+var rng := RandomNumberGenerator.new()
 
 
 func setup_match(player_chips: int = PokerRules.STARTING_CHIPS, opponent_chips: int = PokerRules.STARTING_CHIPS) -> void:
 	player = PokerPlayerStateScript.new("You", player_chips)
-	opponent = PokerPlayerStateScript.new("Opponent", opponent_chips)
+	opponents = [
+		PokerPlayerStateScript.new("AI 1", opponent_chips),
+		PokerPlayerStateScript.new("AI 2", opponent_chips),
+		PokerPlayerStateScript.new("AI 3", opponent_chips),
+	]
+	opponent = opponents[0]
 	start_new_round()
 
 
 func start_new_round() -> void:
+	rng.randomize()
+	if _is_match_busted():
+		_reset_match_chips()
+
 	pot = 0
 	current_bet = 0
+	blinds_posted = false
+	awaiting_player_response = false
 	phase = PokerRules.Phase.PRE_FLOP
 	community_cards.clear()
 	player.reset_for_round()
-	opponent.reset_for_round()
+	for ai_player in opponents:
+		ai_player.reset_for_round()
 	deck.rebuild_and_shuffle()
 
 	player.receive_cards(deck.draw_cards(PokerRules.CARDS_PER_PLAYER))
-	opponent.receive_cards(deck.draw_cards(PokerRules.CARDS_PER_PLAYER))
-	_post_blinds()
+	for ai_player in opponents:
+		ai_player.receive_cards(deck.draw_cards(PokerRules.CARDS_PER_PLAYER))
+	big_blind_opponent_index = rng.randi_range(0, opponents.size() - 1)
 
 	round_started.emit(get_state())
 
 
+func post_blinds() -> void:
+	if blinds_posted or phase != PokerRules.Phase.PRE_FLOP:
+		return
+
+	pot += player.pay_chips(PokerRules.SMALL_BLIND)
+	pot += opponents[big_blind_opponent_index].pay_chips(PokerRules.BIG_BLIND)
+	current_bet = PokerRules.BIG_BLIND
+	blinds_posted = true
+	player_updated.emit(get_state())
+
+
 func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN_RAISE) -> void:
-	if phase == PokerRules.Phase.ROUND_OVER:
+	if phase == PokerRules.Phase.ROUND_OVER or not blinds_posted:
 		return
 
 	_apply_action(player, action, raise_amount)
+	var was_answering_ai_raise := awaiting_player_response
+	awaiting_player_response = false
 	player_updated.emit(get_state())
 
 	if _finish_if_folded():
 		return
 
+	if was_answering_ai_raise and action != PokerRules.Action.RAISE and action != PokerRules.Action.ALL_IN:
+		_take_ai_turn(true)
+		if _finish_if_folded():
+			return
+		if get_call_amount(player) > 0:
+			awaiting_player_response = true
+			player_updated.emit(get_state())
+			return
+		_advance_phase_or_showdown()
+		return
+
 	_take_ai_turn()
 
 	if _finish_if_folded():
+		return
+
+	if get_call_amount(player) > 0:
+		awaiting_player_response = true
+		player_updated.emit(get_state())
 		return
 
 	_advance_phase_or_showdown()
@@ -70,9 +125,14 @@ func get_state() -> Dictionary:
 		"phase_name": PokerRulesScript.get_phase_name(phase),
 		"pot": pot,
 		"current_bet": current_bet,
+		"blinds_posted": blinds_posted,
+		"awaiting_player_response": awaiting_player_response,
+		"big_blind_opponent": opponents[big_blind_opponent_index].display_name,
+		"big_blind_opponent_index": big_blind_opponent_index,
 		"community_cards": community_cards,
 		"player": player.to_summary(),
-		"opponent": opponent.to_summary(),
+		"opponent": opponents[0].to_summary(),
+		"opponents": _get_opponent_summaries(),
 		"call_amount": get_call_amount(player),
 	}
 
@@ -81,24 +141,28 @@ func get_call_amount(actor: PokerPlayerState) -> int:
 	return maxi(current_bet - actor.current_bet, 0)
 
 
-func _post_blinds() -> void:
-	pot += player.pay_chips(PokerRules.SMALL_BLIND)
-	pot += opponent.pay_chips(PokerRules.BIG_BLIND)
-	current_bet = PokerRules.BIG_BLIND
+func _take_ai_turn(only_unmatched: bool = false) -> void:
+	for index in range(opponents.size()):
+		var ai_player := opponents[index]
+		if ai_player.has_folded or ai_player.is_all_in:
+			continue
 
+		var call_amount := get_call_amount(ai_player)
+		if only_unmatched and call_amount == 0:
+			continue
 
-func _take_ai_turn() -> void:
-	var call_amount := get_call_amount(opponent)
-	var action := ai.decide_action(
-		opponent.hole_cards,
-		community_cards,
-		call_amount,
-		call_amount == 0,
-		opponent.chips,
-		phase
-	)
-	_apply_action(opponent, action["action"], action["amount"])
-	ai_acted.emit(action, get_state())
+		var action := ais[index].decide_action(
+			ai_player.hole_cards,
+			community_cards,
+			call_amount,
+			call_amount == 0,
+			ai_player.chips,
+			phase
+		)
+		action = _normalize_ai_action(action, call_amount)
+		_apply_action(ai_player, action["action"], action["amount"])
+		action["actor"] = ai_player.display_name
+		ai_acted.emit(action, get_state())
 
 
 func _apply_action(actor: PokerPlayerState, action: PokerRules.Action, amount: int) -> void:
@@ -121,18 +185,24 @@ func _apply_action(actor: PokerPlayerState, action: PokerRules.Action, amount: i
 
 func _finish_if_folded() -> bool:
 	if player.has_folded:
-		_finish_round(opponent, "Player folded")
+		_deal_remaining_community_cards()
+		_resolve_showdown("Player folded")
 		return true
-	if opponent.has_folded:
-		_finish_round(player, "Opponent folded")
+
+	var active_players := _get_active_players()
+	if active_players.size() == 1:
+		_finish_round(active_players[0], "%s is the last active player" % active_players[0].display_name)
 		return true
+
 	return false
 
 
 func _advance_phase_or_showdown() -> void:
 	player.current_bet = 0
-	opponent.current_bet = 0
+	for ai_player in opponents:
+		ai_player.current_bet = 0
 	current_bet = 0
+	awaiting_player_response = false
 
 	match phase:
 		PokerRules.Phase.PRE_FLOP:
@@ -156,45 +226,147 @@ func _deal_community_cards(amount: int) -> void:
 	community_cards.append_array(deck.draw_cards(amount))
 
 
-func _resolve_showdown() -> void:
-	var player_cards: Array[CardData] = []
-	var opponent_cards: Array[CardData] = []
-	player_cards.append_array(player.hole_cards)
-	player_cards.append_array(community_cards)
-	opponent_cards.append_array(opponent.hole_cards)
-	opponent_cards.append_array(community_cards)
+func _resolve_showdown(reason: String = "Showdown") -> void:
+	var contenders := _get_active_players()
+	var hand_results := {}
+	var winners: Array[PokerPlayerState] = []
+	var best_result := {}
 
-	var player_result := HandEvaluatorScript.evaluate(player_cards)
-	var opponent_result := HandEvaluatorScript.evaluate(opponent_cards)
-	var comparison := HandEvaluatorScript.compare_results(player_result, opponent_result)
+	for contender in contenders:
+		var cards: Array[CardData] = []
+		cards.append_array(contender.hole_cards)
+		cards.append_array(community_cards)
+		var hand_result := HandEvaluatorScript.evaluate(cards)
+		hand_results[contender.display_name] = hand_result
+
+		if winners.is_empty():
+			winners.append(contender)
+			best_result = hand_result
+			continue
+
+		var comparison := HandEvaluatorScript.compare_results(hand_result, best_result)
+		if comparison > 0:
+			winners = [contender]
+			best_result = hand_result
+		elif comparison == 0:
+			winners.append(contender)
+
 	var result := {
-		"reason": "Showdown",
-		"player_hand": player_result,
-		"opponent_hand": opponent_result,
-		"winner": "tie",
+		"reason": reason,
+		"hands": hand_results,
+		"hole_cards": _get_revealed_hole_cards(),
+		"showdown": true,
+		"player_hand": hand_results.get(player.display_name, {}),
+		"opponent_hand": hand_results.get(opponents[0].display_name, {}),
+		"winner": "tie" if winners.size() > 1 else winners[0].display_name,
 	}
 
-	if comparison > 0:
-		player.win_chips(pot)
-		result["winner"] = "player"
-	elif comparison < 0:
-		opponent.win_chips(pot)
-		result["winner"] = "opponent"
-	else:
-		var split_pot := floori(float(pot) / 2.0)
-		player.win_chips(split_pot)
-		opponent.win_chips(pot - split_pot)
+	var split_pot := floori(float(pot) / float(winners.size()))
+	var remainder := pot - (split_pot * winners.size())
+	for index in range(winners.size()):
+		winners[index].win_chips(split_pot + (remainder if index == 0 else 0))
 
-	showdown_finished.emit(result, get_state())
 	phase = PokerRules.Phase.ROUND_OVER
+	showdown_finished.emit(result, get_state())
 	round_finished.emit(result, get_state())
 
 
 func _finish_round(winner: PokerPlayerState, reason: String) -> void:
+	_deal_remaining_community_cards()
 	winner.win_chips(pot)
 	var result := {
 		"reason": reason,
-		"winner": "player" if winner == player else "opponent",
+		"hole_cards": _get_revealed_hole_cards(),
+		"showdown": false,
+		"winner": winner.display_name,
 	}
 	phase = PokerRules.Phase.ROUND_OVER
 	round_finished.emit(result, get_state())
+
+
+func _deal_remaining_community_cards() -> void:
+	var cards_to_deal := PokerRules.MAX_COMMUNITY_CARDS - community_cards.size()
+	if cards_to_deal > 0:
+		_deal_community_cards(cards_to_deal)
+
+
+func _normalize_ai_action(action: Dictionary, call_amount: int) -> Dictionary:
+	if not _any_player_all_in():
+		return action
+
+	if action.get("action", PokerRules.Action.CHECK) == PokerRules.Action.RAISE:
+		return {
+			"action": PokerRules.Action.CALL if call_amount > 0 else PokerRules.Action.CHECK,
+			"amount": call_amount,
+		}
+
+	return action
+
+
+func _get_opponent_summaries() -> Array:
+	var summaries := []
+	for ai_player in opponents:
+		summaries.append(ai_player.to_summary())
+	return summaries
+
+
+func _get_revealed_hole_cards() -> Dictionary:
+	var revealed_cards := {
+		player.display_name: _card_codes(player.hole_cards),
+	}
+
+	for ai_player in opponents:
+		revealed_cards[ai_player.display_name] = _card_codes(ai_player.hole_cards)
+
+	return revealed_cards
+
+
+func _card_codes(cards: Array[CardData]) -> Array[String]:
+	var codes: Array[String] = []
+
+	for card in cards:
+		codes.append(card.get_code())
+
+	return codes
+
+
+func _get_active_players() -> Array[PokerPlayerState]:
+	var active_players: Array[PokerPlayerState] = []
+	if not player.has_folded:
+		active_players.append(player)
+	for ai_player in opponents:
+		if not ai_player.has_folded:
+			active_players.append(ai_player)
+	return active_players
+
+
+func _get_first_active_opponent() -> PokerPlayerState:
+	for ai_player in opponents:
+		if not ai_player.has_folded:
+			return ai_player
+
+	return opponents[0]
+
+
+func _any_player_all_in() -> bool:
+	if player.is_all_in:
+		return true
+	for ai_player in opponents:
+		if ai_player.is_all_in:
+			return true
+	return false
+
+
+func _is_match_busted() -> bool:
+	if player.chips <= 0:
+		return true
+	for ai_player in opponents:
+		if ai_player.chips <= 0:
+			return true
+	return false
+
+
+func _reset_match_chips() -> void:
+	player.chips = PokerRules.STARTING_CHIPS
+	for ai_player in opponents:
+		ai_player.chips = PokerRules.STARTING_CHIPS

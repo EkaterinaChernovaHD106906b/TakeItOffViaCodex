@@ -22,9 +22,10 @@ func decide_action(
 ) -> Dictionary:
 	var strength := estimate_strength(hole_cards, community_cards, phase)
 	var wants_to_bluff := rng.randf() < bluff_chance
+	var has_strong_made_hand := strength >= _strong_made_hand_threshold(phase)
 
 	if can_check:
-		if strength >= 0.74 or wants_to_bluff:
+		if has_strong_made_hand or wants_to_bluff:
 			return _make_action(PokerRules.Action.RAISE, _raise_size(available_chips))
 		return _make_action(PokerRules.Action.CHECK, 0)
 
@@ -36,7 +37,7 @@ func decide_action(
 	if strength < 0.28 and not wants_to_bluff:
 		return _make_action(PokerRules.Action.FOLD, 0)
 
-	if strength >= 0.72 or wants_to_bluff:
+	if has_strong_made_hand or wants_to_bluff:
 		return _make_action(PokerRules.Action.RAISE, _raise_size(available_chips))
 
 	return _make_action(PokerRules.Action.CALL, call_amount)
@@ -52,8 +53,7 @@ func estimate_strength(
 		all_cards.append_array(hole_cards)
 		all_cards.append_array(community_cards)
 		var result := HandEvaluatorScript.evaluate(all_cards)
-		var rank: int = result.get("rank", PokerRules.HandRank.HIGH_CARD)
-		return clampf(float(rank) / float(PokerRules.HandRank.STRAIGHT_FLUSH), 0.0, 1.0)
+		return _made_hand_strength(result, phase)
 
 	return _estimate_preflop_strength(hole_cards, phase)
 
@@ -78,6 +78,47 @@ func _estimate_preflop_strength(hole_cards: Array[CardData], phase: PokerRules.P
 		strength += 0.05
 
 	return clampf(strength, 0.0, 1.0)
+
+
+func _made_hand_strength(result: Dictionary, phase: PokerRules.Phase) -> float:
+	var rank: int = result.get("rank", PokerRules.HandRank.HIGH_CARD)
+	var tiebreakers: Array = result.get("tiebreakers", [])
+	var top_value := 0.0
+
+	if not tiebreakers.is_empty():
+		top_value = float(tiebreakers[0]) / 14.0
+
+	match rank:
+		PokerRules.HandRank.STRAIGHT_FLUSH:
+			return 1.0
+		PokerRules.HandRank.FOUR_OF_A_KIND:
+			return 0.97
+		PokerRules.HandRank.FULL_HOUSE:
+			return 0.93
+		PokerRules.HandRank.FLUSH:
+			return 0.87 + top_value * 0.03
+		PokerRules.HandRank.STRAIGHT:
+			return 0.82 + top_value * 0.03
+		PokerRules.HandRank.THREE_OF_A_KIND:
+			return 0.76 + top_value * 0.04
+		PokerRules.HandRank.TWO_PAIR:
+			return 0.62 + top_value * 0.06
+		PokerRules.HandRank.ONE_PAIR:
+			return 0.34 + top_value * 0.14
+		_:
+			return 0.08 + top_value * 0.18
+
+
+func _strong_made_hand_threshold(phase: PokerRules.Phase) -> float:
+	match phase:
+		PokerRules.Phase.RIVER:
+			return 0.70
+		PokerRules.Phase.TURN:
+			return 0.73
+		PokerRules.Phase.FLOP:
+			return 0.76
+		_:
+			return 0.72
 
 
 func _raise_size(available_chips: int) -> int:

@@ -21,6 +21,7 @@ const CARD_BACK_PATH := "res://assets/cards/back.svg"
 @onready var call_button: Button = %CallButton
 @onready var raise_button: Button = %RaiseButton
 @onready var all_in_button: Button = %AllInButton
+@onready var post_blinds_button: Button = %PostBlindsButton
 @onready var new_round_button: Button = %NewRoundButton
 
 var round_manager: PokerRoundManager
@@ -51,13 +52,21 @@ func _connect_buttons() -> void:
 	call_button.pressed.connect(func() -> void: _act(PokerRules.Action.CALL))
 	raise_button.pressed.connect(func() -> void: _act(PokerRules.Action.RAISE, PokerRules.MIN_RAISE))
 	all_in_button.pressed.connect(func() -> void: _act(PokerRules.Action.ALL_IN))
+	post_blinds_button.pressed.connect(_post_blinds)
 	new_round_button.pressed.connect(_start_round)
 
 
 func _start_round() -> void:
 	reveal_opponent_cards = false
 	round_manager.start_new_round()
-	_append_log("New round started. Blinds posted.")
+	_clear_log()
+	_append_log("New round started. Press Post Blinds to begin betting.")
+
+
+func _post_blinds() -> void:
+	round_manager.post_blinds()
+	var state := round_manager.get_state()
+	_append_log("Blinds posted: player 10, %s 20." % state.get("big_blind_opponent", "AI"))
 
 
 func _act(action: PokerRules.Action, amount: int = 0) -> void:
@@ -78,44 +87,103 @@ func _on_player_updated(state: Dictionary) -> void:
 
 
 func _on_ai_acted(action: Dictionary, state: Dictionary) -> void:
-	_append_log("AI: %s" % _action_to_text(action))
+	_append_log("%s: %s" % [action.get("actor", "AI"), _action_to_text(action)])
 	_render_state(state)
 
 
 func _on_showdown_finished(result: Dictionary, state: Dictionary) -> void:
 	reveal_opponent_cards = true
-	var player_hand: Dictionary = result.get("player_hand", {})
-	var opponent_hand: Dictionary = result.get("opponent_hand", {})
-	_append_log("Showdown: player %s vs AI %s." % [
-		HandEvaluatorScript.describe_result(player_hand),
-		HandEvaluatorScript.describe_result(opponent_hand),
-	])
+	_append_log("Showdown: %s" % _showdown_text(result.get("hands", {})))
 	_render_state(state)
 
 
 func _on_round_finished(result: Dictionary, state: Dictionary) -> void:
 	reveal_opponent_cards = true
+	if not result.get("showdown", false):
+		_append_log("Board completed for dev showdown.")
+		_append_log("Reveal: %s" % _revealed_cards_text(result.get("hole_cards", {})))
 	_append_log("Round over: %s wins. %s" % [result.get("winner", "tie"), result.get("reason", "")])
-	_render_state(state)
+	_render_state(round_manager.get_state())
 
 
 func _render_state(state: Dictionary) -> void:
 	last_state = state
 	var player: Dictionary = state.get("player", {})
-	var opponent: Dictionary = state.get("opponent", {})
+	var opponents: Array = state.get("opponents", [])
 	var phase: PokerRules.Phase = state.get("phase", PokerRules.Phase.PRE_FLOP)
 	var call_amount: int = state.get("call_amount", 0)
+	var blinds_posted: bool = state.get("blinds_posted", false)
+	var player_is_all_in: bool = player.get("is_all_in", false)
+	var any_opponent_is_all_in := _any_opponent_all_in(opponents)
 
 	phase_label.text = "Phase: %s" % state.get("phase_name", "Unknown")
 	pot_label.text = "Pot: %d" % state.get("pot", 0)
 	current_bet_label.text = "Current bet: %d" % state.get("current_bet", 0)
 	player_chips_label.text = "Player chips: %d" % player.get("chips", 0)
-	opponent_chips_label.text = "AI chips: %d" % opponent.get("chips", 0)
+	opponent_chips_label.text = _opponents_chip_text(opponents)
 
 	_render_cards(player_cards, player.get("hole_cards", []), true)
-	_render_cards(opponent_cards, opponent.get("hole_cards", []), reveal_opponent_cards)
+	_render_opponents(opponent_cards, opponents, reveal_opponent_cards)
 	_render_cards(community_cards, state.get("community_cards", []), true, 5)
-	_update_buttons(phase, call_amount)
+	_update_buttons(phase, call_amount, blinds_posted, player_is_all_in, any_opponent_is_all_in)
+
+
+func _render_opponents(container: HBoxContainer, opponents: Array, show_faces: bool) -> void:
+	for child in container.get_children():
+		child.queue_free()
+
+	for opponent in opponents:
+		var group := VBoxContainer.new()
+		group.add_theme_constant_override("separation", 4)
+		group.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		container.add_child(group)
+
+		var name_label := Label.new()
+		name_label.text = "%s: %d" % [opponent.get("name", "AI"), opponent.get("chips", 0)]
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		group.add_child(name_label)
+
+		var cards_row := HBoxContainer.new()
+		cards_row.add_theme_constant_override("separation", 6)
+		cards_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		group.add_child(cards_row)
+
+		_render_cards(cards_row, opponent.get("hole_cards", []), show_faces)
+
+
+func _opponents_chip_text(opponents: Array) -> String:
+	var parts: Array[String] = []
+
+	for opponent in opponents:
+		parts.append("%s: %d" % [opponent.get("name", "AI"), opponent.get("chips", 0)])
+
+	return " | ".join(parts)
+
+
+func _any_opponent_all_in(opponents: Array) -> bool:
+	for opponent in opponents:
+		if opponent.get("is_all_in", false):
+			return true
+
+	return false
+
+
+func _showdown_text(hands: Dictionary) -> String:
+	var parts: Array[String] = []
+
+	for player_name in hands.keys():
+		parts.append("%s %s" % [player_name, HandEvaluatorScript.describe_result(hands[player_name])])
+
+	return "; ".join(parts)
+
+
+func _revealed_cards_text(hole_cards: Dictionary) -> String:
+	var parts: Array[String] = []
+
+	for player_name in hole_cards.keys():
+		parts.append("%s %s" % [player_name, " ".join(hole_cards[player_name])])
+
+	return "; ".join(parts)
 
 
 func _render_cards(container: HBoxContainer, cards: Array, show_faces: bool, placeholders: int = 0) -> void:
@@ -221,14 +289,23 @@ func _display_suit(card_code: String) -> String:
 	return "?"
 
 
-func _update_buttons(phase: PokerRules.Phase, call_amount: int) -> void:
+func _update_buttons(
+	phase: PokerRules.Phase,
+	call_amount: int,
+	blinds_posted: bool,
+	player_is_all_in: bool,
+	opponent_is_all_in: bool
+) -> void:
 	var is_round_over := phase == PokerRules.Phase.ROUND_OVER
-	fold_button.disabled = is_round_over
-	check_button.disabled = is_round_over or call_amount > 0
-	call_button.disabled = is_round_over or call_amount == 0
+	var actions_disabled := is_round_over or not blinds_posted
+	var all_in_locked := player_is_all_in or opponent_is_all_in
+	fold_button.disabled = actions_disabled
+	check_button.disabled = actions_disabled or call_amount > 0
+	call_button.disabled = actions_disabled or call_amount == 0
 	call_button.text = "Call %d" % call_amount if call_amount > 0 else "Call"
-	raise_button.disabled = is_round_over
-	all_in_button.disabled = is_round_over
+	raise_button.disabled = actions_disabled or all_in_locked
+	all_in_button.disabled = actions_disabled or player_is_all_in
+	post_blinds_button.disabled = is_round_over or blinds_posted
 	new_round_button.disabled = not is_round_over
 
 
@@ -238,6 +315,13 @@ func _append_log(message: String) -> void:
 
 	log_label.append_text("%s\n" % message)
 	log_label.scroll_to_line(log_label.get_line_count())
+
+
+func _clear_log() -> void:
+	if log_label == null:
+		return
+
+	log_label.clear()
 
 
 func _action_to_text(action: Dictionary) -> String:
