@@ -19,10 +19,8 @@ var opponent := PokerPlayerState.new("AI 1")
 var opponents: Array[PokerPlayerState] = [
 	opponent,
 	PokerPlayerState.new("AI 2"),
-	PokerPlayerState.new("AI 3"),
 ]
 var ais: Array[PokerAI] = [
-	PokerAI.new(),
 	PokerAI.new(),
 	PokerAI.new(),
 ]
@@ -42,7 +40,6 @@ func setup_match(player_chips: int = PokerRules.STARTING_CHIPS, opponent_chips: 
 	opponents = [
 		PokerPlayerStateScript.new("AI 1", opponent_chips),
 		PokerPlayerStateScript.new("AI 2", opponent_chips),
-		PokerPlayerStateScript.new("AI 3", opponent_chips),
 	]
 	opponent = opponents[0]
 	start_new_round()
@@ -84,7 +81,7 @@ func post_blinds() -> void:
 
 
 func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN_RAISE) -> void:
-	if phase == PokerRules.Phase.ROUND_OVER or not blinds_posted:
+	if phase == PokerRules.Phase.ROUND_OVER or not blinds_posted or player.is_all_in:
 		return
 
 	_apply_action(player, action, raise_amount)
@@ -94,10 +91,18 @@ func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN
 
 	if _finish_if_folded():
 		return
+	if _finish_if_all_active_players_are_all_in():
+		return
+	if _finish_if_all_in_betting_is_closed():
+		return
 
 	if was_answering_ai_raise and action != PokerRules.Action.RAISE and action != PokerRules.Action.ALL_IN:
 		_take_ai_turn(true)
 		if _finish_if_folded():
+			return
+		if _finish_if_all_active_players_are_all_in():
+			return
+		if _finish_if_all_in_betting_is_closed():
 			return
 		if get_call_amount(player) > 0:
 			awaiting_player_response = true
@@ -109,6 +114,10 @@ func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN
 	_take_ai_turn()
 
 	if _finish_if_folded():
+		return
+	if _finish_if_all_active_players_are_all_in():
+		return
+	if _finish_if_all_in_betting_is_closed():
 		return
 
 	if get_call_amount(player) > 0:
@@ -195,6 +204,38 @@ func _finish_if_folded() -> bool:
 		return true
 
 	return false
+
+
+func _finish_if_all_active_players_are_all_in() -> bool:
+	var active_players := _get_active_players()
+	if active_players.size() < 2:
+		return false
+
+	for active_player in active_players:
+		if not active_player.is_all_in:
+			return false
+
+	_deal_remaining_community_cards()
+	_resolve_showdown("All active players are all in")
+	return true
+
+
+func _finish_if_all_in_betting_is_closed() -> bool:
+	var active_players := _get_active_players()
+	var has_all_in_player := false
+
+	for active_player in active_players:
+		if active_player.is_all_in:
+			has_all_in_player = true
+		if get_call_amount(active_player) > 0:
+			return false
+
+	if not has_all_in_player:
+		return false
+
+	_deal_remaining_community_cards()
+	_resolve_showdown("All-in betting is closed")
+	return true
 
 
 func _advance_phase_or_showdown() -> void:

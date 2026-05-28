@@ -6,6 +6,7 @@ const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
 var display_name := "Player"
 var chips := PokerRulesScript.STARTING_CHIPS
 var current_bet := 0
+var round_contribution := 0
 var has_folded := false
 var is_all_in := false
 var hole_cards: Array[CardData] = []
@@ -18,6 +19,7 @@ func _init(player_name: String = "Player", starting_chips: int = PokerRulesScrip
 
 func reset_for_round() -> void:
 	current_bet = 0
+	round_contribution = 0
 	has_folded = false
 	is_all_in = false
 	hole_cards.clear()
@@ -31,6 +33,7 @@ func pay_chips(amount: int) -> int:
 	var paid_amount := mini(maxi(amount, 0), chips)
 	chips -= paid_amount
 	current_bet += paid_amount
+	round_contribution += paid_amount
 	is_all_in = chips == 0
 	return paid_amount
 
@@ -48,6 +51,7 @@ func to_summary() -> Dictionary:
 		"name": display_name,
 		"chips": chips,
 		"current_bet": current_bet,
+		"round_contribution": round_contribution,
 		"has_folded": has_folded,
 		"is_all_in": is_all_in,
 		"hole_cards": hole_cards,

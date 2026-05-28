@@ -76,8 +76,8 @@ func _test_round_start() -> bool:
 		return _fail("Player should receive two hole cards.")
 	if state["opponent"]["hole_cards"].size() != 2:
 		return _fail("First opponent should receive two hole cards.")
-	if state["opponents"].size() != 3:
-		return _fail("Round should include three AI opponents.")
+	if state["opponents"].size() != 2:
+		return _fail("Round should include two AI opponents.")
 	for opponent in state["opponents"]:
 		if opponent["hole_cards"].size() != 2:
 			return _fail("Each AI opponent should receive two hole cards.")
