@@ -14,6 +14,9 @@ const PokerAIScript := preload("res://scripts/ai/PokerAI.gd")
 const PokerPlayerStateScript := preload("res://scripts/game/PokerPlayerState.gd")
 const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
 
+const MAX_PREFLOP_AI_RAISES := 5
+const PREFLOP_CAPPED_CALL_STRENGTH := 0.58
+
 var player := PokerPlayerState.new("You")
 var opponent := PokerPlayerState.new("AI 1")
 var opponents: Array[PokerPlayerState] = [
@@ -32,6 +35,7 @@ var current_bet := 0
 var blinds_posted := false
 var awaiting_player_response := false
 var big_blind_opponent_index := 0
+var preflop_ai_raise_count := 0
 var rng := RandomNumberGenerator.new()
 
 
@@ -54,6 +58,7 @@ func start_new_round() -> void:
 	current_bet = 0
 	blinds_posted = false
 	awaiting_player_response = false
+	preflop_ai_raise_count = 0
 	phase = PokerRules.Phase.PRE_FLOP
 	community_cards.clear()
 	player.reset_for_round()
@@ -169,7 +174,10 @@ func _take_ai_turn(only_unmatched: bool = false) -> void:
 			phase
 		)
 		action = _normalize_ai_action(action, call_amount)
+		action = _normalize_preflop_ai_action(ais[index], ai_player, action, call_amount)
 		_apply_action(ai_player, action["action"], action["amount"])
+		if phase == PokerRules.Phase.PRE_FLOP and action["action"] == PokerRules.Action.RAISE:
+			preflop_ai_raise_count += 1
 		action["actor"] = ai_player.display_name
 		ai_acted.emit(action, get_state())
 
@@ -247,6 +255,7 @@ func _advance_phase_or_showdown() -> void:
 
 	match phase:
 		PokerRules.Phase.PRE_FLOP:
+			preflop_ai_raise_count = 0
 			_deal_community_cards(3)
 			phase = PokerRules.Phase.FLOP
 			phase_changed.emit(phase, get_state())
@@ -342,6 +351,48 @@ func _normalize_ai_action(action: Dictionary, call_amount: int) -> Dictionary:
 		}
 
 	return action
+
+
+func _normalize_preflop_ai_action(
+	ai: PokerAI,
+	ai_player: PokerPlayerState,
+	action: Dictionary,
+	call_amount: int
+) -> Dictionary:
+	if phase != PokerRules.Phase.PRE_FLOP:
+		return action
+	if preflop_ai_raise_count < MAX_PREFLOP_AI_RAISES:
+		return action
+
+	if call_amount == 0:
+		return {
+			"action": PokerRules.Action.CHECK,
+			"amount": 0,
+		}
+
+	var strength := ai.estimate_strength(ai_player.hole_cards, community_cards, phase)
+	if call_amount >= ai_player.chips:
+		if strength >= 0.68:
+			return {
+				"action": PokerRules.Action.ALL_IN,
+				"amount": ai_player.chips,
+			}
+
+		return {
+			"action": PokerRules.Action.FOLD,
+			"amount": 0,
+		}
+
+	if strength >= PREFLOP_CAPPED_CALL_STRENGTH:
+		return {
+			"action": PokerRules.Action.CALL,
+			"amount": call_amount,
+		}
+
+	return {
+		"action": PokerRules.Action.FOLD,
+		"amount": 0,
+	}
 
 
 func _get_opponent_summaries() -> Array:
