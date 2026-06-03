@@ -141,7 +141,10 @@ const MAX_LOG_EVENTS := 5
 @onready var new_round_button: Button = %NewRoundButton
 @onready var add_fun_button: Button = %AddFunButton
 @onready var settings_button: Button = %SettingsButton
-@onready var settings_menu: AcceptDialog = %SettingsMenu
+@onready var outfit_popup: Control = %OutfitUnlockOverlay
+@onready var outfit_popup_message: Label = %OutfitUnlockMessage
+@onready var outfit_popup_image: TextureRect = %OutfitUnlockImage
+@onready var outfit_popup_close_button: Button = %OutfitUnlockCloseButton
 
 var round_manager: PokerRoundManager
 var last_state: Dictionary = {}
@@ -165,11 +168,11 @@ var opponent_clothing_stages := {
 	"AI 2": 1,
 }
 var outfit_unlock_turn := 0
-var outfit_popup: AcceptDialog
 var bet_chip_view: TextureRect
 var bet_chip_tween: Tween
 var bet_chip_queue: Array[Dictionary] = []
 var is_bet_chip_animating := false
+var pending_outfit_popup_layer_path := ""
 var music_player: AudioStreamPlayer
 var current_music_index := 0
 var is_music_started := false
@@ -412,10 +415,10 @@ func _release_action_button_focus() -> void:
 
 
 func _setup_outfit_popup() -> void:
-	outfit_popup = AcceptDialog.new()
-	outfit_popup.title = "Outfit unlocked"
-	outfit_popup.dialog_text = "You unlocked a new outfit."
-	add_child(outfit_popup)
+	outfit_popup.visible = false
+	outfit_popup_close_button.disabled = not outfit_popup.visible
+	_style_casino_button(outfit_popup_close_button, Vector2(140, 42), 18)
+	outfit_popup_close_button.pressed.connect(_hide_outfit_unlocked_popup)
 
 
 func _setup_music_player() -> void:
@@ -514,6 +517,7 @@ func _on_ai_acted(action: Dictionary, state: Dictionary) -> void:
 func _on_showdown_finished(result: Dictionary, state: Dictionary) -> void:
 	reveal_opponent_cards = true
 	_append_log("Showdown: %s" % _showdown_text(result.get("hands", {})))
+	_append_log("Reveal: %s" % _revealed_cards_text(result.get("hole_cards", {})))
 	_render_state(state)
 
 
@@ -608,23 +612,61 @@ func _unlock_next_outfit() -> void:
 		return
 
 	var current_index: int = opponent_outfit_indices.get(opponent_name, 0)
-	opponent_outfit_indices[opponent_name] = (current_index + 1) % outfit_sets.size()
+	var unlocked_outfit_index := (current_index + 1) % outfit_sets.size()
+	opponent_outfit_indices[opponent_name] = unlocked_outfit_index
 
 	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
 	if unlocked_count < outfit_sets.size():
 		unlocked_outfit_counts[opponent_name] = unlocked_count + 1
-		_show_outfit_unlocked_popup()
+		_request_outfit_unlocked_popup("%s/layer1.png" % outfit_sets[unlocked_outfit_index])
 
 	if not last_state.is_empty():
 		_render_state(last_state)
 
 
-func _show_outfit_unlocked_popup() -> void:
+func _request_outfit_unlocked_popup(layer_path: String = "") -> void:
+	pending_outfit_popup_layer_path = layer_path
+
+	if _has_pending_bet_chip_animation():
+		return
+
+	_show_pending_outfit_unlocked_popup()
+
+
+func _show_pending_outfit_unlocked_popup() -> void:
+	if pending_outfit_popup_layer_path.is_empty():
+		return
+
+	var layer_path := pending_outfit_popup_layer_path
+	pending_outfit_popup_layer_path = ""
+	_hide_bet_chip()
+	_show_outfit_unlocked_popup(layer_path)
+
+
+func _has_pending_bet_chip_animation() -> bool:
+	return is_bet_chip_animating or not bet_chip_queue.is_empty()
+
+
+func _show_outfit_unlocked_popup(layer_path: String = "") -> void:
 	if outfit_popup == null:
 		return
 
-	outfit_popup.dialog_text = "You unlocked a new outfit."
-	outfit_popup.popup_centered()
+	if outfit_popup_message != null:
+		outfit_popup_message.text = "You unlocked a new outfit."
+
+	if outfit_popup_image != null and not layer_path.is_empty() and ResourceLoader.exists(layer_path):
+		outfit_popup_image.texture = load(layer_path)
+
+	outfit_popup.visible = true
+	outfit_popup_close_button.disabled = false
+
+
+func _hide_outfit_unlocked_popup() -> void:
+	if outfit_popup == null:
+		return
+
+	outfit_popup.visible = false
+	outfit_popup_close_button.disabled = true
 
 
 func _render_state(state: Dictionary) -> void:
@@ -740,6 +782,8 @@ func _on_bet_chip_animation_finished() -> void:
 	is_bet_chip_animating = false
 	if not bet_chip_queue.is_empty():
 		_play_next_bet_chip()
+	else:
+		_show_pending_outfit_unlocked_popup()
 
 
 func _hide_bet_chip() -> void:
@@ -963,18 +1007,61 @@ func _showdown_text(hands: Dictionary) -> String:
 	var parts: Array[String] = []
 
 	for player_name in hands.keys():
-		parts.append("%s %s" % [player_name, HandEvaluatorScript.describe_result(hands[player_name])])
+		var hand: Dictionary = hands[player_name]
+		var hand_text := HandEvaluatorScript.describe_result(hand)
+		var cards_text := _hand_cards_text(hand)
+		if not cards_text.is_empty():
+			hand_text = "%s [%s]" % [hand_text, cards_text]
+		parts.append("%s %s" % [player_name, hand_text])
 
 	return "; ".join(parts)
+
+
+func _hand_cards_text(hand: Dictionary) -> String:
+	var card_codes: Array[String] = []
+
+	for card in hand.get("cards", []):
+		if card != null and card.has_method("get_code"):
+			card_codes.append(card.get_code())
+
+	return " ".join(_format_log_card_codes(card_codes))
 
 
 func _revealed_cards_text(hole_cards: Dictionary) -> String:
 	var parts: Array[String] = []
 
 	for player_name in hole_cards.keys():
-		parts.append("%s %s" % [player_name, " ".join(hole_cards[player_name])])
+		parts.append("%s %s" % [player_name, " ".join(_format_log_card_codes(hole_cards[player_name]))])
 
 	return "; ".join(parts)
+
+
+func _format_log_card_codes(card_codes: Array) -> Array[String]:
+	var formatted: Array[String] = []
+
+	for card_code in card_codes:
+		formatted.append(_format_log_card_code(str(card_code)))
+
+	return formatted
+
+
+func _format_log_card_code(card_code: String) -> String:
+	if card_code.length() < 2:
+		return card_code
+
+	var suit_code := card_code.substr(card_code.length() - 1, 1)
+	var rank_code := card_code.substr(0, card_code.length() - 1)
+	match suit_code:
+		"C":
+			return "%s%s" % [rank_code, String.chr(9827)]
+		"D":
+			return "%s%s" % [rank_code, String.chr(9830)]
+		"H":
+			return "%s%s" % [rank_code, String.chr(9829)]
+		"S":
+			return "%s%s" % [rank_code, String.chr(9824)]
+		_:
+			return card_code
 
 
 func _render_cards(container: HBoxContainer, cards: Array, show_faces: bool, placeholders: int = 0) -> void:

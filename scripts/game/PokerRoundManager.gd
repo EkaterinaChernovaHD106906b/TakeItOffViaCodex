@@ -287,6 +287,7 @@ func _resolve_showdown(reason: String = "Showdown") -> void:
 		cards.append_array(contender.hole_cards)
 		cards.append_array(community_cards)
 		var hand_result := HandEvaluatorScript.evaluate(cards)
+		hand_result = HandEvaluatorScript.apply_personal_showdown_tiebreakers(hand_result, contender.hole_cards)
 		hand_results[contender.display_name] = hand_result
 
 		if winners.is_empty():
@@ -417,9 +418,41 @@ func _card_codes(cards: Array[CardData]) -> Array[String]:
 	var codes: Array[String] = []
 
 	for card in cards:
-		codes.append(card.get_code())
+		codes.append(_card_log_code(card))
 
 	return codes
+
+
+func _card_log_code(card: CardData) -> String:
+	return "%s%s" % [card.get_rank_label(), _safe_suit_symbol(card.suit)]
+
+
+func _safe_suit_symbol(suit: String) -> String:
+	match suit:
+		"clubs":
+			return "♣"
+		"diamonds":
+			return "♦"
+		"hearts":
+			return "♥"
+		"spades":
+			return "♠"
+		_:
+			return "?"
+
+
+func _suit_symbol(suit: String) -> String:
+	match suit:
+		"clubs":
+			return "♣"
+		"diamonds":
+			return "♦"
+		"hearts":
+			return "♥"
+		"spades":
+			return "♠"
+		_:
+			return "?"
 
 
 func _get_active_players() -> Array[PokerPlayerState]:

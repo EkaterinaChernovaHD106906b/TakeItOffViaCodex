@@ -41,8 +41,88 @@ static func compare_results(left: Dictionary, right: Dictionary) -> int:
 	return 1 if left_tiebreakers.size() > right_tiebreakers.size() else -1
 
 
+static func apply_personal_showdown_tiebreakers(result: Dictionary, hole_cards: Array[CardData]) -> Dictionary:
+	var adjusted := result.duplicate(true)
+	var rank: int = adjusted.get("rank", PokerRules.HandRank.HIGH_CARD)
+	var tiebreakers: Array = adjusted.get("tiebreakers", [])
+
+	match rank:
+		PokerRules.HandRank.FOUR_OF_A_KIND:
+			adjusted["tiebreakers"] = [
+				_tiebreaker(tiebreakers, 0),
+				_highest_hole_rank(hole_cards),
+			]
+		PokerRules.HandRank.FLUSH:
+			adjusted["tiebreakers"] = [_highest_hole_rank(hole_cards)]
+		PokerRules.HandRank.THREE_OF_A_KIND:
+			adjusted["tiebreakers"] = [
+				_tiebreaker(tiebreakers, 0),
+				_highest_hole_rank(hole_cards),
+			]
+		PokerRules.HandRank.TWO_PAIR:
+			adjusted["tiebreakers"] = [
+				_tiebreaker(tiebreakers, 0),
+				_tiebreaker(tiebreakers, 1),
+				_highest_hole_rank(hole_cards),
+			]
+		PokerRules.HandRank.ONE_PAIR:
+			adjusted["tiebreakers"] = [
+				_tiebreaker(tiebreakers, 0),
+				_highest_hole_rank(hole_cards),
+			]
+		PokerRules.HandRank.HIGH_CARD:
+			adjusted["tiebreakers"] = [_highest_hole_rank(hole_cards)]
+
+	return adjusted
+
+
 static func describe_result(result: Dictionary) -> String:
-	return PokerRulesScript.get_hand_rank_name(result.get("rank", PokerRules.HandRank.HIGH_CARD))
+	var rank: int = result.get("rank", PokerRules.HandRank.HIGH_CARD)
+	var rank_name := PokerRulesScript.get_hand_rank_name(rank)
+	var tiebreakers: Array = result.get("tiebreakers", [])
+
+	match rank:
+		PokerRules.HandRank.STRAIGHT_FLUSH:
+			return "%s (%s high)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+		PokerRules.HandRank.FOUR_OF_A_KIND:
+			return "%s (%s, kicker %s)" % [
+				rank_name,
+				_rank_label(_tiebreaker(tiebreakers, 0)),
+				_rank_label(_tiebreaker(tiebreakers, 1)),
+			]
+		PokerRules.HandRank.FULL_HOUSE:
+			return "%s (%s over %s)" % [
+				rank_name,
+				_rank_label(_tiebreaker(tiebreakers, 0)),
+				_rank_label(_tiebreaker(tiebreakers, 1)),
+			]
+		PokerRules.HandRank.FLUSH:
+			return "%s (%s high)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+		PokerRules.HandRank.STRAIGHT:
+			return "%s (%s high)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+		PokerRules.HandRank.THREE_OF_A_KIND:
+			return "%s (%s, kicker %s)" % [
+				rank_name,
+				_rank_label(_tiebreaker(tiebreakers, 0)),
+				_rank_label(_tiebreaker(tiebreakers, 1)),
+			]
+		PokerRules.HandRank.TWO_PAIR:
+			return "%s (%s and %s, kicker %s)" % [
+				rank_name,
+				_rank_label(_tiebreaker(tiebreakers, 0)),
+				_rank_label(_tiebreaker(tiebreakers, 1)),
+				_rank_label(_tiebreaker(tiebreakers, 2)),
+			]
+		PokerRules.HandRank.ONE_PAIR:
+			return "%s (%s, kicker %s)" % [
+				rank_name,
+				_rank_label(_tiebreaker(tiebreakers, 0)),
+				_rank_label(_tiebreaker(tiebreakers, 1)),
+			]
+		PokerRules.HandRank.HIGH_CARD:
+			return "%s (%s)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+		_:
+			return "%s (%s)" % [rank_name, _rank_list(tiebreakers)]
 
 
 static func _evaluate_five_cards(cards: Array) -> Dictionary:
@@ -194,6 +274,60 @@ static func _highest_except_list(sorted_ranks: Array[int], excluded_ranks: Array
 			values.append(rank)
 
 	return values
+
+
+static func _tiebreaker(tiebreakers: Array, index: int) -> int:
+	if index < 0 or index >= tiebreakers.size():
+		return 0
+
+	return tiebreakers[index]
+
+
+static func _rank_list(ranks: Array) -> String:
+	var labels: Array[String] = []
+
+	for rank in ranks:
+		labels.append(_rank_label(rank))
+
+	return ", ".join(labels)
+
+
+static func _highest_hole_rank(hole_cards: Array[CardData]) -> int:
+	var highest := 0
+
+	for card in hole_cards:
+		highest = maxi(highest, card.rank)
+
+	return highest
+
+
+static func _highest_hole_rank_except(hole_cards: Array[CardData], excluded_ranks: Array[int]) -> int:
+	var highest := 0
+
+	for card in hole_cards:
+		if excluded_ranks.has(card.rank):
+			continue
+		highest = maxi(highest, card.rank)
+
+	return highest
+
+
+static func _rank_label(rank: int) -> String:
+	match rank:
+		14:
+			return "Ace"
+		13:
+			return "King"
+		12:
+			return "Queen"
+		11:
+			return "Jack"
+		10:
+			return "10"
+		0:
+			return "-"
+		_:
+			return str(rank)
 
 
 static func _make_result(rank: int, tiebreakers: Array, cards: Array) -> Dictionary:

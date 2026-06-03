@@ -4,6 +4,8 @@ extends RefCounted
 const HandEvaluatorScript := preload("res://scripts/poker/HandEvaluator.gd")
 const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
 
+const PREFLOP_CHECK_RAISE_THRESHOLD := 0.86
+
 var bluff_chance := 0.12
 var rng := RandomNumberGenerator.new()
 
@@ -25,6 +27,10 @@ func decide_action(
 	var has_strong_made_hand := strength >= _strong_made_hand_threshold(phase)
 
 	if can_check:
+		if phase == PokerRules.Phase.PRE_FLOP:
+			if strength >= PREFLOP_CHECK_RAISE_THRESHOLD or wants_to_bluff:
+				return _make_action(PokerRules.Action.RAISE, _raise_size(available_chips))
+			return _make_action(PokerRules.Action.CHECK, 0)
 		if has_strong_made_hand or wants_to_bluff:
 			return _make_action(PokerRules.Action.RAISE, _raise_size(available_chips))
 		return _make_action(PokerRules.Action.CHECK, 0)
