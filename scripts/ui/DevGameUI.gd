@@ -3,8 +3,10 @@ extends Control
 const PokerRoundManagerScript := preload("res://scripts/game/PokerRoundManager.gd")
 const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
 const HandEvaluatorScript := preload("res://scripts/poker/HandEvaluator.gd")
+const MainMenuScene := preload("res://scenes/MainMenu.tscn")
 
 const MAIN_MENU_SCENE_PATH := "res://scenes/MainMenu.tscn"
+const LOG_TITLE_FONT_PATH := "res://fonts/Lumierepolis-Bold.otf"
 const CARD_ASSET_PATH := "res://assets/cards_assets/%s"
 const CARD_BACK_PATH := "res://assets/cards_assets/Back (2).png"
 const CARD_SIZE := Vector2(86, 120)
@@ -175,10 +177,13 @@ var is_bet_chip_animating := false
 var pending_outfit_popup_layer_path := ""
 var music_player: AudioStreamPlayer
 var current_music_index := 0
+var paused_music_position := 0.0
 var is_music_started := false
+var should_resume_fun_after_pause := false
 var fun_light_overlays: Array[ColorRect] = []
 var fun_light_color_index := 0
 var fun_light_timer: SceneTreeTimer
+var pause_menu: Control
 
 
 func _ready() -> void:
@@ -193,6 +198,15 @@ func _ready() -> void:
 	_style_action_buttons()
 	_update_add_fun_button_text()
 	_start_round()
+
+
+func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		if pause_menu == null:
+			_open_settings_menu()
+		else:
+			_resume_from_pause_menu()
 
 
 func _connect_round_signals() -> void:
@@ -271,7 +285,24 @@ func _style_casino_button(
 
 func _open_settings_menu() -> void:
 	settings_button.release_focus()
-	get_tree().change_scene_to_file(MAIN_MENU_SCENE_PATH)
+	if pause_menu != null:
+		return
+
+	_pause_fun_for_menu()
+	pause_menu = MainMenuScene.instantiate()
+	pause_menu.process_mode = Node.PROCESS_MODE_ALWAYS
+	pause_menu.set_resume_mode(true)
+	pause_menu.resume_requested.connect(_resume_from_pause_menu)
+	add_child(pause_menu)
+	get_tree().paused = true
+
+
+func _resume_from_pause_menu() -> void:
+	get_tree().paused = false
+	if pause_menu != null:
+		pause_menu.queue_free()
+		pause_menu = null
+	_resume_fun_after_menu()
 
 
 func _on_add_fun_pressed() -> void:
@@ -282,6 +313,31 @@ func _on_add_fun_pressed() -> void:
 	else:
 		_start_music_playlist()
 		_append_log("Add Some Fun: music started.")
+
+
+func _pause_fun_for_menu() -> void:
+	should_resume_fun_after_pause = is_music_started
+	if not should_resume_fun_after_pause:
+		return
+
+	if music_player != null:
+		paused_music_position = music_player.get_playback_position()
+		music_player.stop()
+	_stop_fun_lights()
+
+
+func _resume_fun_after_menu() -> void:
+	if not should_resume_fun_after_pause:
+		return
+
+	if not is_music_started:
+		should_resume_fun_after_pause = false
+		return
+
+	should_resume_fun_after_pause = false
+	_start_fun_lights()
+	_play_music_track(current_music_index, paused_music_position)
+	paused_music_position = 0.0
 
 
 func _start_music_playlist() -> void:
@@ -302,11 +358,12 @@ func _stop_music_playlist() -> void:
 		music_player.stop()
 
 	is_music_started = false
+	paused_music_position = 0.0
 	_stop_fun_lights()
 	_update_add_fun_button_text()
 
 
-func _play_music_track(track_index: int) -> void:
+func _play_music_track(track_index: int, from_position: float = 0.0) -> void:
 	if music_player == null or MUSIC_PLAYLIST.is_empty():
 		return
 
@@ -317,7 +374,7 @@ func _play_music_track(track_index: int) -> void:
 		return
 
 	music_player.stream = stream
-	music_player.play()
+	music_player.play(maxf(from_position, 0.0))
 
 
 func _play_next_music_track() -> void:
@@ -350,7 +407,7 @@ func _stop_fun_lights() -> void:
 
 
 func _pulse_fun_lights() -> void:
-	if not is_music_started:
+	if not is_music_started or should_resume_fun_after_pause:
 		return
 
 	_sync_fun_light_rects()
@@ -527,7 +584,6 @@ func _on_round_finished(result: Dictionary, state: Dictionary) -> void:
 	if result.get("winner", "") == "You":
 		_unlock_next_outfit()
 	if not result.get("showdown", false):
-		_append_log("Board completed for dev showdown.")
 		_append_log("Reveal: %s" % _revealed_cards_text(result.get("hole_cards", {})))
 	_append_log("Round over: %s wins. %s" % [result.get("winner", "tie"), result.get("reason", "")])
 	_render_state(round_manager.get_state())
@@ -1009,22 +1065,9 @@ func _showdown_text(hands: Dictionary) -> String:
 	for player_name in hands.keys():
 		var hand: Dictionary = hands[player_name]
 		var hand_text := HandEvaluatorScript.describe_result(hand)
-		var cards_text := _hand_cards_text(hand)
-		if not cards_text.is_empty():
-			hand_text = "%s [%s]" % [hand_text, cards_text]
 		parts.append("%s %s" % [player_name, hand_text])
 
 	return "; ".join(parts)
-
-
-func _hand_cards_text(hand: Dictionary) -> String:
-	var card_codes: Array[String] = []
-
-	for card in hand.get("cards", []):
-		if card != null and card.has_method("get_code"):
-			card_codes.append(card.get_code())
-
-	return " ".join(_format_log_card_codes(card_codes))
 
 
 func _revealed_cards_text(hole_cards: Dictionary) -> String:
@@ -1050,7 +1093,7 @@ func _format_log_card_code(card_code: String) -> String:
 		return card_code
 
 	var suit_code := card_code.substr(card_code.length() - 1, 1)
-	var rank_code := card_code.substr(0, card_code.length() - 1)
+	var rank_code := _format_log_rank_code(card_code.substr(0, card_code.length() - 1))
 	match suit_code:
 		"C":
 			return "%s%s" % [rank_code, String.chr(9827)]
@@ -1062,6 +1105,10 @@ func _format_log_card_code(card_code: String) -> String:
 			return "%s%s" % [rank_code, String.chr(9824)]
 		_:
 			return card_code
+
+
+func _format_log_rank_code(rank_code: String) -> String:
+	return "10" if rank_code == "T" else rank_code
 
 
 func _render_cards(container: HBoxContainer, cards: Array, show_faces: bool, placeholders: int = 0) -> void:
@@ -1219,8 +1266,26 @@ func _append_log(message: String) -> void:
 
 	log_label.clear()
 	for event in log_events:
-		log_label.append_text("%s\n" % event)
+		log_label.append_text("%s\n" % _format_log_event(event))
 	log_label.scroll_to_line(log_label.get_line_count())
+
+
+func _format_log_event(event: String) -> String:
+	var separator_index := event.find(":")
+	if separator_index < 0:
+		return _escape_bbcode(event)
+
+	var title := event.substr(0, separator_index)
+	var body := event.substr(separator_index + 1)
+	return "[font=%s]%s[/font]:%s" % [
+		LOG_TITLE_FONT_PATH,
+		_escape_bbcode(title),
+		_escape_bbcode(body),
+	]
+
+
+func _escape_bbcode(text: String) -> String:
+	return text.replace("[", "[lb]").replace("]", "[rb]")
 
 
 func _clear_log() -> void:

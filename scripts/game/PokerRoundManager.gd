@@ -418,7 +418,7 @@ func _card_codes(cards: Array[CardData]) -> Array[String]:
 	var codes: Array[String] = []
 
 	for card in cards:
-		codes.append(_card_log_code(card))
+		codes.append(card.get_code())
 
 	return codes
 
