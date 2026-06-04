@@ -112,6 +112,11 @@ const OPPONENT_OUTFIT_SETS := {
 		"res://assets/opponents/ai2/layers3",
 	],
 }
+const REACTION_DISABLED_OUTFITS := {
+	"AI 2": [
+		"res://assets/opponents/ai2/layers3",
+	],
+}
 const OUTFIT_UNLOCK_SEQUENCE := ["AI 2", "AI 1"]
 
 const OPPONENT_DISPLAY_NAMES := {
@@ -168,6 +173,10 @@ var unlocked_outfit_counts := {
 var opponent_clothing_stages := {
 	"AI 1": 1,
 	"AI 2": 1,
+}
+var opponent_outfit_baseline_chips := {
+	"AI 1": PokerRules.STARTING_CHIPS,
+	"AI 2": PokerRules.STARTING_CHIPS,
 }
 var outfit_unlock_turn := 0
 var bet_chip_view: TextureRect
@@ -309,10 +318,8 @@ func _on_add_fun_pressed() -> void:
 	add_fun_button.release_focus()
 	if is_music_started and music_player != null and music_player.playing:
 		_stop_music_playlist()
-		_append_log("Add Some Fun: music stopped.")
 	else:
 		_start_music_playlist()
-		_append_log("Add Some Fun: music started.")
 
 
 func _pause_fun_for_menu() -> void:
@@ -518,7 +525,7 @@ func _start_round() -> void:
 	_play_sfx(SOUND_SHUFFLE)
 	_play_sfx(SOUND_DECK_RIFFLE)
 	reveal_opponent_cards = false
-	_reset_opponent_clothing_stages()
+	_advance_completed_opponent_outfits()
 	round_manager.start_new_round()
 	_clear_log()
 	_set_all_opponent_reactions("neutral")
@@ -602,12 +609,20 @@ func _make_portrait_layer(path: String, flip_h: bool = false) -> TextureRect:
 
 
 func _set_opponent_reaction(opponent_name: String, reaction_name: String) -> void:
+	if _opponent_reactions_disabled(opponent_name):
+		opponent_reactions[opponent_name] = "neutral"
+		return
+
 	opponent_reactions[opponent_name] = reaction_name
 	if not last_state.is_empty():
 		_render_state(last_state)
 
 
-func _set_temporary_opponent_reaction(opponent_name: String, reaction_name: String, duration: float = 1.4) -> void:
+func _set_temporary_opponent_reaction(opponent_name: String, reaction_name: String, duration: float = 0.8) -> void:
+	if _opponent_reactions_disabled(opponent_name):
+		opponent_reactions[opponent_name] = "neutral"
+		return
+
 	_set_opponent_reaction(opponent_name, reaction_name)
 	var timer := get_tree().create_timer(duration)
 	reaction_reset_timers[opponent_name] = timer
@@ -619,7 +634,7 @@ func _set_temporary_opponent_reaction(opponent_name: String, reaction_name: Stri
 
 func _set_all_opponent_reactions(reaction_name: String) -> void:
 	for opponent_name in opponent_reactions.keys():
-		opponent_reactions[opponent_name] = reaction_name
+		opponent_reactions[opponent_name] = "neutral" if _opponent_reactions_disabled(opponent_name) else reaction_name
 	if not last_state.is_empty():
 		_render_state(last_state)
 
@@ -627,6 +642,11 @@ func _set_all_opponent_reactions(reaction_name: String) -> void:
 func _reset_opponent_clothing_stages() -> void:
 	for opponent_name in opponent_clothing_stages.keys():
 		opponent_clothing_stages[opponent_name] = 1
+
+
+func _advance_completed_opponent_outfits() -> void:
+	for opponent_name in opponent_clothing_stages.keys():
+		_advance_outfit_after_final_layer(opponent_name, opponent_clothing_stages[opponent_name])
 
 
 func _react_to_ai_action(action: Dictionary) -> void:
@@ -647,13 +667,13 @@ func _react_to_round_result(result: Dictionary) -> void:
 	for opponent_name in opponent_reactions.keys():
 		var profile: Dictionary = OPPONENT_REACTION_PROFILES.get(opponent_name, {})
 		if winner == opponent_name:
-			_set_temporary_opponent_reaction(opponent_name, profile.get("win", "happy"), 2.0)
+			_set_temporary_opponent_reaction(opponent_name, profile.get("win", "happy"), 0.8)
 		elif winner == "You":
-			_set_temporary_opponent_reaction(opponent_name, profile.get("lose", "embarrassed"), 2.0)
+			_set_temporary_opponent_reaction(opponent_name, profile.get("lose", "embarrassed"), 0.8)
 		elif winner == "tie":
-			_set_temporary_opponent_reaction(opponent_name, profile.get("tie", "talk"), 2.0)
+			_set_temporary_opponent_reaction(opponent_name, profile.get("tie", "talk"), 0.8)
 		else:
-			_set_temporary_opponent_reaction(opponent_name, profile.get("other_win", "worried"), 2.0)
+			_set_temporary_opponent_reaction(opponent_name, profile.get("other_win", "worried"), 0.8)
 
 
 func _unlock_next_outfit() -> void:
@@ -667,12 +687,9 @@ func _unlock_next_outfit() -> void:
 	if outfit_sets.size() <= 1:
 		return
 
-	var current_index: int = opponent_outfit_indices.get(opponent_name, 0)
-	var unlocked_outfit_index := (current_index + 1) % outfit_sets.size()
-	opponent_outfit_indices[opponent_name] = unlocked_outfit_index
-
 	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
 	if unlocked_count < outfit_sets.size():
+		var unlocked_outfit_index := unlocked_count
 		unlocked_outfit_counts[opponent_name] = unlocked_count + 1
 		_request_outfit_unlocked_popup("%s/layer1.png" % outfit_sets[unlocked_outfit_index])
 
@@ -969,7 +986,9 @@ func _make_opponent_portrait(opponent: Dictionary, include_committed_chips: bool
 	stack.add_child(age_label)
 
 	var layer_label := Label.new()
-	layer_label.text = "Layer: %d/%d" % [clothing_stage, MAX_CLOTHING_LAYERS]
+	var layer_count := _current_opponent_outfit_layer_count(opponent_name)
+	var displayed_layer_progress := _displayed_layer_progress(clothing_stage, layer_count)
+	layer_label.text = "Layer: %d/%d" % [displayed_layer_progress, layer_count]
 	layer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer_label.add_theme_font_size_override("font_size", 20)
 	layer_label.add_theme_color_override("font_color", Color(0.72, 0.82, 0.9))
@@ -980,8 +999,8 @@ func _make_opponent_portrait(opponent: Dictionary, include_committed_chips: bool
 	pips.add_theme_constant_override("separation", 3)
 	stack.add_child(pips)
 
-	for index in range(MAX_CLOTHING_LAYERS):
-		pips.add_child(_make_clothing_pip(index + 1 < clothing_stage))
+	for index in range(layer_count):
+		pips.add_child(_make_clothing_pip(index < displayed_layer_progress))
 
 	return portrait
 
@@ -993,6 +1012,9 @@ func _make_layered_opponent_portrait(opponent_name: String, clothing_stage: int)
 	var flip_h := opponent_name == "AI 2"
 
 	portrait.add_child(_make_portrait_layer(_opponent_sprite_path(opponent_name, clothing_stage), flip_h))
+
+	if _opponent_reactions_disabled(opponent_name):
+		return portrait
 
 	var reaction_name: String = opponent_reactions.get(opponent_name, "neutral")
 	var config: Dictionary = HEROINE_EXPRESSIONS.get(reaction_name, HEROINE_EXPRESSIONS["neutral"])
@@ -1019,17 +1041,73 @@ func _chips_for_clothing_layers(opponent: Dictionary, include_committed_chips: b
 	return chips
 
 
-func _target_clothing_stage(chips: int) -> int:
-	var lost_chips := PokerRules.STARTING_CHIPS - maxi(chips, 0)
+func _target_clothing_stage(opponent_name: String, chips: int) -> int:
+	var baseline_chips: int = opponent_outfit_baseline_chips.get(opponent_name, PokerRules.STARTING_CHIPS)
+	var lost_chips := baseline_chips - maxi(chips, 0)
 	return clampi(floori(float(lost_chips) / float(CLOTHING_CHIP_STEP)) + 1, 1, MAX_CLOTHING_LAYERS)
 
 
 func _update_clothing_stage(opponent_name: String, chips: int) -> int:
 	var current_stage: int = opponent_clothing_stages.get(opponent_name, 1)
-	var target_stage := _target_clothing_stage(chips)
+	if current_stage == 1:
+		var baseline_chips: int = opponent_outfit_baseline_chips.get(opponent_name, PokerRules.STARTING_CHIPS)
+		opponent_outfit_baseline_chips[opponent_name] = maxi(baseline_chips, chips)
+	var target_stage := _target_clothing_stage(opponent_name, chips)
 	var next_stage := maxi(current_stage, target_stage)
 	opponent_clothing_stages[opponent_name] = next_stage
 	return next_stage
+
+
+func _current_opponent_outfit_layer_count(opponent_name: String) -> int:
+	return _outfit_layer_count(_current_opponent_outfit_path(opponent_name))
+
+
+func _outfit_layer_count(outfit_path: String) -> int:
+	if outfit_path.is_empty():
+		return MAX_CLOTHING_LAYERS
+
+	var count := 0
+	for layer_number in range(1, MAX_CLOTHING_LAYERS + 1):
+		if ResourceLoader.exists("%s/layer%d.png" % [outfit_path, layer_number]):
+			count += 1
+
+	return maxi(count, 1)
+
+
+func _displayed_layer_progress(clothing_stage: int, layer_count: int) -> int:
+	var safe_layer_count := maxi(layer_count, 1)
+	if clothing_stage >= safe_layer_count:
+		return safe_layer_count
+
+	return clampi(clothing_stage - 1, 0, safe_layer_count)
+
+
+func _advance_outfit_after_final_layer(opponent_name: String, clothing_stage: int) -> void:
+	if clothing_stage < _current_opponent_outfit_layer_count(opponent_name):
+		return
+
+	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
+	if outfit_sets.is_empty():
+		return
+
+	var current_index: int = opponent_outfit_indices.get(opponent_name, 0)
+	var next_index := current_index + 1
+	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
+	if next_index >= unlocked_count or next_index >= outfit_sets.size():
+		return
+
+	opponent_outfit_indices[opponent_name] = next_index
+	opponent_clothing_stages[opponent_name] = 1
+	opponent_outfit_baseline_chips[opponent_name] = _current_opponent_chips(opponent_name)
+
+
+func _current_opponent_chips(opponent_name: String) -> int:
+	var state := round_manager.get_state() if round_manager != null else last_state
+	for opponent in state.get("opponents", []):
+		if opponent.get("name", "") == opponent_name:
+			return opponent.get("chips", PokerRules.STARTING_CHIPS)
+
+	return PokerRules.STARTING_CHIPS
 
 
 func _opponent_sprite_path(opponent_name: String, clothing_stage: int) -> String:
@@ -1038,8 +1116,22 @@ func _opponent_sprite_path(opponent_name: String, clothing_stage: int) -> String
 		return ""
 
 	var outfit_index: int = opponent_outfit_indices.get(opponent_name, 0) % outfit_sets.size()
-	var layer_number := clampi(clothing_stage, 1, MAX_CLOTHING_LAYERS)
+	var layer_number := clampi(clothing_stage, 1, _current_opponent_outfit_layer_count(opponent_name))
 	return "%s/layer%d.png" % [outfit_sets[outfit_index], layer_number]
+
+
+func _current_opponent_outfit_path(opponent_name: String) -> String:
+	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
+	if outfit_sets.is_empty():
+		return ""
+
+	var outfit_index: int = opponent_outfit_indices.get(opponent_name, 0) % outfit_sets.size()
+	return outfit_sets[outfit_index]
+
+
+func _opponent_reactions_disabled(opponent_name: String) -> bool:
+	var disabled_outfits: Array = REACTION_DISABLED_OUTFITS.get(opponent_name, [])
+	return disabled_outfits.has(_current_opponent_outfit_path(opponent_name))
 
 
 func _opponents_chip_text(opponents: Array) -> String:

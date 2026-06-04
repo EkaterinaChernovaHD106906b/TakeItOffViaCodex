@@ -13,6 +13,7 @@ func _init() -> void:
 	failed = _test_hand_evaluator() or failed
 	failed = _test_round_start() or failed
 	failed = _test_busted_match_resets_chips() or failed
+	failed = _test_all_in_betting_closed_with_non_all_in_ai() or failed
 
 	quit(1 if failed else 0)
 
@@ -111,6 +112,38 @@ func _test_busted_match_resets_chips() -> bool:
 	for opponent in state["opponents"]:
 		if opponent["chips"] != PokerRulesScript.STARTING_CHIPS:
 			return _fail("Each AI opponent should reset with the player when the match restarts.")
+
+	return false
+
+
+func _test_all_in_betting_closed_with_non_all_in_ai() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	manager.phase = PokerRulesScript.Phase.TURN
+	manager.blinds_posted = true
+	manager.community_cards = _cards(["AS", "KD", "7C", "2H"])
+	manager.current_bet = 1000
+	manager.pot = 3000
+
+	manager.player.chips = 0
+	manager.player.current_bet = 1000
+	manager.player.is_all_in = true
+
+	manager.opponents[0].chips = 340
+	manager.opponents[0].current_bet = 1000
+	manager.opponents[0].is_all_in = false
+
+	manager.opponents[1].chips = 0
+	manager.opponents[1].current_bet = 1000
+	manager.opponents[1].is_all_in = true
+
+	manager._settle_unmatched_ai_bets_after_player_all_in()
+	var state := manager.get_state()
+
+	if state["phase"] != PokerRulesScript.Phase.ROUND_OVER:
+		return _fail("Closed all-in betting should finish the round even if one AI still has chips.")
+	if state["community_cards"].size() != PokerRulesScript.MAX_COMMUNITY_CARDS:
+		return _fail("Closed all-in betting should deal remaining community cards before showdown.")
 
 	return false
 

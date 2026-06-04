@@ -125,12 +125,42 @@ func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN
 	if _finish_if_all_in_betting_is_closed():
 		return
 
+	if player.is_all_in:
+		_settle_unmatched_ai_bets_after_player_all_in()
+		return
+
 	if get_call_amount(player) > 0:
 		awaiting_player_response = true
 		player_updated.emit(get_state())
 		return
 
 	_advance_phase_or_showdown()
+
+
+func _settle_unmatched_ai_bets_after_player_all_in() -> void:
+	while _has_unmatched_ai_bets():
+		_take_ai_turn(true)
+		if _finish_if_folded():
+			return
+		if _finish_if_all_active_players_are_all_in():
+			return
+		if _finish_if_all_in_betting_is_closed():
+			return
+
+	if _finish_if_all_in_betting_is_closed():
+		return
+
+	_advance_phase_or_showdown()
+
+
+func _has_unmatched_ai_bets() -> bool:
+	for ai_player in opponents:
+		if ai_player.has_folded or ai_player.is_all_in:
+			continue
+		if get_call_amount(ai_player) > 0:
+			return true
+
+	return false
 
 
 func get_state() -> Dictionary:
