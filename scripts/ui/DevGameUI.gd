@@ -126,6 +126,7 @@ const OPPONENT_DISPLAY_NAMES := {
 const MAX_CLOTHING_LAYERS := 4
 const CLOTHING_CHIP_STEP := 250
 const MAX_LOG_EVENTS := 5
+const LAYER_LOSS_POPUP_SECONDS := 5
 
 @onready var phase_label: Label = %PhaseLabel
 @onready var pot_label: Label = %PotLabel
@@ -152,6 +153,9 @@ const MAX_LOG_EVENTS := 5
 @onready var outfit_popup_message: Label = %OutfitUnlockMessage
 @onready var outfit_popup_image: TextureRect = %OutfitUnlockImage
 @onready var outfit_popup_close_button: Button = %OutfitUnlockCloseButton
+@onready var layer_loss_popup: Control = %LayerLossPopup
+@onready var layer_loss_popup_window: Control = %LayerLossPopupWindow
+@onready var layer_loss_popup_label: Label = %LayerLossPopupLabel
 
 var round_manager: PokerRoundManager
 var last_state: Dictionary = {}
@@ -193,6 +197,8 @@ var fun_light_overlays: Array[ColorRect] = []
 var fun_light_color_index := 0
 var fun_light_timer: SceneTreeTimer
 var pause_menu: Control
+var layer_loss_popup_queue: Array[String] = []
+var layer_loss_popup_tween: Tween
 
 
 func _ready() -> void:
@@ -525,7 +531,8 @@ func _start_round() -> void:
 	_play_sfx(SOUND_SHUFFLE)
 	_play_sfx(SOUND_DECK_RIFFLE)
 	reveal_opponent_cards = false
-	_advance_completed_opponent_outfits()
+	if _match_is_busted_before_new_round():
+		_reset_opponent_outfits_to_default()
 	round_manager.start_new_round()
 	_clear_log()
 	_set_all_opponent_reactions("neutral")
@@ -644,9 +651,26 @@ func _reset_opponent_clothing_stages() -> void:
 		opponent_clothing_stages[opponent_name] = 1
 
 
-func _advance_completed_opponent_outfits() -> void:
+func _match_is_busted_before_new_round() -> bool:
+	if round_manager == null:
+		return false
+
+	var state := round_manager.get_state()
+	if state.get("player", {}).get("chips", PokerRules.STARTING_CHIPS) <= 0:
+		return true
+
+	for opponent in state.get("opponents", []):
+		if opponent.get("chips", PokerRules.STARTING_CHIPS) <= 0:
+			return true
+
+	return false
+
+
+func _reset_opponent_outfits_to_default() -> void:
 	for opponent_name in opponent_clothing_stages.keys():
-		_advance_outfit_after_final_layer(opponent_name, opponent_clothing_stages[opponent_name])
+		opponent_outfit_indices[opponent_name] = 0
+		opponent_clothing_stages[opponent_name] = 1
+		opponent_outfit_baseline_chips[opponent_name] = PokerRules.STARTING_CHIPS
 
 
 func _react_to_ai_action(action: Dictionary) -> void:
@@ -1054,8 +1078,59 @@ func _update_clothing_stage(opponent_name: String, chips: int) -> int:
 		opponent_outfit_baseline_chips[opponent_name] = maxi(baseline_chips, chips)
 	var target_stage := _target_clothing_stage(opponent_name, chips)
 	var next_stage := maxi(current_stage, target_stage)
+	if next_stage > current_stage:
+		_queue_layer_loss_popups(opponent_name, next_stage - current_stage)
 	opponent_clothing_stages[opponent_name] = next_stage
 	return next_stage
+
+
+func _queue_layer_loss_popups(opponent_name: String, loss_count: int) -> void:
+	if loss_count <= 0:
+		return
+
+	var display_name := _display_player_name(opponent_name)
+	var layer_word := "layer" if loss_count == 1 else "layers"
+	layer_loss_popup_queue.append("%s -%d %s" % [display_name, loss_count, layer_word])
+
+	_show_next_layer_loss_popup()
+
+
+func _show_next_layer_loss_popup() -> void:
+	if layer_loss_popup == null or layer_loss_popup_window == null or layer_loss_popup_label == null:
+		return
+	if layer_loss_popup.visible or layer_loss_popup_queue.is_empty():
+		return
+
+	layer_loss_popup_label.text = layer_loss_popup_queue.pop_front()
+	layer_loss_popup.visible = true
+	layer_loss_popup.modulate = Color(1, 1, 1, 0)
+	var center_position := layer_loss_popup_window.position
+	var start_position := Vector2(
+		center_position.x,
+		get_viewport_rect().size.y + layer_loss_popup_window.size.y
+	)
+	layer_loss_popup_window.position = start_position
+
+	if layer_loss_popup_tween != null and layer_loss_popup_tween.is_valid():
+		layer_loss_popup_tween.kill()
+
+	layer_loss_popup_tween = create_tween()
+	layer_loss_popup_tween.set_trans(Tween.TRANS_SINE)
+	layer_loss_popup_tween.set_ease(Tween.EASE_OUT)
+	layer_loss_popup_tween.set_parallel(true)
+	layer_loss_popup_tween.tween_property(layer_loss_popup, "modulate:a", 1.0, 0.16)
+	layer_loss_popup_tween.tween_property(layer_loss_popup_window, "position", center_position, 0.28)
+	layer_loss_popup_tween.set_parallel(false)
+	layer_loss_popup_tween.tween_interval(LAYER_LOSS_POPUP_SECONDS)
+	layer_loss_popup_tween.tween_property(layer_loss_popup, "modulate:a", 0.0, 0.18)
+	layer_loss_popup_tween.tween_callback(_hide_layer_loss_popup)
+
+
+func _hide_layer_loss_popup() -> void:
+	if layer_loss_popup != null:
+		layer_loss_popup.visible = false
+
+	_show_next_layer_loss_popup()
 
 
 func _current_opponent_outfit_layer_count(opponent_name: String) -> int:
@@ -1080,34 +1155,6 @@ func _displayed_layer_progress(clothing_stage: int, layer_count: int) -> int:
 		return safe_layer_count
 
 	return clampi(clothing_stage - 1, 0, safe_layer_count)
-
-
-func _advance_outfit_after_final_layer(opponent_name: String, clothing_stage: int) -> void:
-	if clothing_stage < _current_opponent_outfit_layer_count(opponent_name):
-		return
-
-	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
-	if outfit_sets.is_empty():
-		return
-
-	var current_index: int = opponent_outfit_indices.get(opponent_name, 0)
-	var next_index := current_index + 1
-	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
-	if next_index >= unlocked_count or next_index >= outfit_sets.size():
-		return
-
-	opponent_outfit_indices[opponent_name] = next_index
-	opponent_clothing_stages[opponent_name] = 1
-	opponent_outfit_baseline_chips[opponent_name] = _current_opponent_chips(opponent_name)
-
-
-func _current_opponent_chips(opponent_name: String) -> int:
-	var state := round_manager.get_state() if round_manager != null else last_state
-	for opponent in state.get("opponents", []):
-		if opponent.get("name", "") == opponent_name:
-			return opponent.get("chips", PokerRules.STARTING_CHIPS)
-
-	return PokerRules.STARTING_CHIPS
 
 
 func _opponent_sprite_path(opponent_name: String, clothing_stage: int) -> String:
@@ -1156,10 +1203,62 @@ func _showdown_text(hands: Dictionary) -> String:
 
 	for player_name in hands.keys():
 		var hand: Dictionary = hands[player_name]
-		var hand_text := HandEvaluatorScript.describe_result(hand)
+		var include_kicker := _showdown_hand_needs_kicker(player_name, hand, hands)
+		var hand_text := HandEvaluatorScript.describe_result(hand, include_kicker)
 		parts.append("%s %s" % [player_name, hand_text])
 
 	return "; ".join(parts)
+
+
+func _showdown_hand_needs_kicker(player_name: String, hand: Dictionary, hands: Dictionary) -> bool:
+	var rank: int = hand.get("rank", PokerRules.HandRank.HIGH_CARD)
+	if not _hand_rank_has_kicker(rank):
+		return false
+
+	var primary_key := _showdown_primary_hand_key(hand)
+	for other_player_name in hands.keys():
+		if other_player_name == player_name:
+			continue
+		var other_hand: Dictionary = hands[other_player_name]
+		if _showdown_primary_hand_key(other_hand) == primary_key:
+			return true
+
+	return false
+
+
+func _hand_rank_has_kicker(rank: int) -> bool:
+	return [
+		PokerRules.HandRank.FOUR_OF_A_KIND,
+		PokerRules.HandRank.THREE_OF_A_KIND,
+		PokerRules.HandRank.TWO_PAIR,
+		PokerRules.HandRank.ONE_PAIR,
+	].has(rank)
+
+
+func _showdown_primary_hand_key(hand: Dictionary) -> String:
+	var rank: int = hand.get("rank", PokerRules.HandRank.HIGH_CARD)
+	var tiebreakers: Array = hand.get("tiebreakers", [])
+	var primary_count := _primary_tiebreaker_count(rank)
+	var primary_values: Array[String] = []
+
+	for index in range(primary_count):
+		primary_values.append(str(tiebreakers[index] if index < tiebreakers.size() else 0))
+
+	return "%d:%s" % [rank, ",".join(primary_values)]
+
+
+func _primary_tiebreaker_count(rank: int) -> int:
+	match rank:
+		PokerRules.HandRank.FOUR_OF_A_KIND:
+			return 1
+		PokerRules.HandRank.THREE_OF_A_KIND:
+			return 1
+		PokerRules.HandRank.TWO_PAIR:
+			return 2
+		PokerRules.HandRank.ONE_PAIR:
+			return 1
+		_:
+			return 0
 
 
 func _revealed_cards_text(hole_cards: Dictionary) -> String:

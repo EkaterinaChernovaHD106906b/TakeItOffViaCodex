@@ -11,9 +11,12 @@ func _init() -> void:
 	var failed := false
 	failed = _test_deck() or failed
 	failed = _test_hand_evaluator() or failed
+	failed = _test_personal_showdown_kicker() or failed
+	failed = _test_describe_result_can_hide_kicker() or failed
 	failed = _test_round_start() or failed
 	failed = _test_busted_match_resets_chips() or failed
 	failed = _test_all_in_betting_closed_with_non_all_in_ai() or failed
+	failed = _test_capped_ai_raise_becomes_all_in() or failed
 
 	quit(1 if failed else 0)
 
@@ -58,6 +61,45 @@ func _test_hand_evaluator() -> bool:
 
 	if HandEvaluatorScript.compare_results(straight_flush, full_house) <= 0:
 		return _fail("Straight flush should beat full house.")
+
+	return false
+
+
+func _test_personal_showdown_kicker() -> bool:
+	var community := _cards(["AS", "QD", "9C", "7H", "2S"])
+	var king_kicker_hole := _cards(["AH", "KD"])
+	var jack_kicker_hole := _cards(["AC", "JD"])
+
+	var king_result := HandEvaluatorScript.evaluate(king_kicker_hole + community)
+	king_result = HandEvaluatorScript.apply_personal_showdown_tiebreakers(king_result, king_kicker_hole)
+	var jack_result := HandEvaluatorScript.evaluate(jack_kicker_hole + community)
+	jack_result = HandEvaluatorScript.apply_personal_showdown_tiebreakers(jack_result, jack_kicker_hole)
+
+	if king_result["rank"] != PokerRulesScript.HandRank.ONE_PAIR:
+		return _fail("Expected one pair for the king kicker hand.")
+	if king_result["tiebreakers"] != [14, 13]:
+		return _fail("Personal kicker should exclude the pair rank from hole cards.")
+	if jack_result["tiebreakers"] != [14, 11]:
+		return _fail("Lower personal kicker should be preserved after excluding the pair rank.")
+	if HandEvaluatorScript.compare_results(king_result, jack_result) <= 0:
+		return _fail("King kicker should beat jack kicker when both players have the same pair.")
+
+	return false
+
+
+func _test_describe_result_can_hide_kicker() -> bool:
+	var result := {
+		"rank": PokerRulesScript.HandRank.TWO_PAIR,
+		"tiebreakers": [14, 12, 13],
+	}
+
+	var with_kicker := HandEvaluatorScript.describe_result(result)
+	var without_kicker := HandEvaluatorScript.describe_result(result, false)
+
+	if with_kicker != "Two Pair (Ace and Queen, kicker King)":
+		return _fail("Two pair description should include kicker by default.")
+	if without_kicker != "Two Pair (Ace and Queen)":
+		return _fail("Two pair description should hide only kicker details when requested.")
 
 	return false
 
@@ -144,6 +186,25 @@ func _test_all_in_betting_closed_with_non_all_in_ai() -> bool:
 		return _fail("Closed all-in betting should finish the round even if one AI still has chips.")
 	if state["community_cards"].size() != PokerRulesScript.MAX_COMMUNITY_CARDS:
 		return _fail("Closed all-in betting should deal remaining community cards before showdown.")
+
+	return false
+
+
+func _test_capped_ai_raise_becomes_all_in() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	manager.ai_raise_count = manager.MAX_AI_RAISES_PER_BETTING_ROUND
+	manager.opponents[0].chips = 420
+
+	var action := manager._normalize_capped_ai_raise_action(manager.opponents[0], {
+		"action": PokerRulesScript.Action.RAISE,
+		"amount": PokerRulesScript.MIN_RAISE,
+	})
+
+	if action["action"] != PokerRulesScript.Action.ALL_IN:
+		return _fail("AI raise after the cap should become all-in.")
+	if action["amount"] != 420:
+		return _fail("Capped AI all-in should use all remaining chips.")
 
 	return false
 

@@ -50,25 +50,28 @@ static func apply_personal_showdown_tiebreakers(result: Dictionary, hole_cards: 
 		PokerRules.HandRank.FOUR_OF_A_KIND:
 			adjusted["tiebreakers"] = [
 				_tiebreaker(tiebreakers, 0),
-				_highest_hole_rank(hole_cards),
+				_highest_hole_rank_except(hole_cards, [_tiebreaker(tiebreakers, 0)]),
 			]
 		PokerRules.HandRank.FLUSH:
 			adjusted["tiebreakers"] = [_highest_hole_rank(hole_cards)]
 		PokerRules.HandRank.THREE_OF_A_KIND:
 			adjusted["tiebreakers"] = [
 				_tiebreaker(tiebreakers, 0),
-				_highest_hole_rank(hole_cards),
+				_highest_hole_rank_except(hole_cards, [_tiebreaker(tiebreakers, 0)]),
 			]
 		PokerRules.HandRank.TWO_PAIR:
 			adjusted["tiebreakers"] = [
 				_tiebreaker(tiebreakers, 0),
 				_tiebreaker(tiebreakers, 1),
-				_highest_hole_rank(hole_cards),
+				_highest_hole_rank_except(hole_cards, [
+					_tiebreaker(tiebreakers, 0),
+					_tiebreaker(tiebreakers, 1),
+				]),
 			]
 		PokerRules.HandRank.ONE_PAIR:
 			adjusted["tiebreakers"] = [
 				_tiebreaker(tiebreakers, 0),
-				_highest_hole_rank(hole_cards),
+				_highest_hole_rank_except(hole_cards, [_tiebreaker(tiebreakers, 0)]),
 			]
 		PokerRules.HandRank.HIGH_CARD:
 			adjusted["tiebreakers"] = [_highest_hole_rank(hole_cards)]
@@ -76,11 +79,62 @@ static func apply_personal_showdown_tiebreakers(result: Dictionary, hole_cards: 
 	return adjusted
 
 
-static func describe_result(result: Dictionary) -> String:
+static func describe_result(result: Dictionary, include_kicker: bool = true) -> String:
 	var rank: int = result.get("rank", PokerRules.HandRank.HIGH_CARD)
 	var rank_name := PokerRulesScript.get_hand_rank_name(rank)
 	var tiebreakers: Array = result.get("tiebreakers", [])
 
+	if not include_kicker:
+		return _describe_result_without_kicker(rank, rank_name, tiebreakers)
+
+	return _describe_result_with_kicker(rank, rank_name, tiebreakers)
+
+
+static func _describe_result_without_kicker(rank: int, rank_name: String, tiebreakers: Array) -> String:
+	match rank:
+		PokerRules.HandRank.STRAIGHT_FLUSH:
+			return _describe_high_card_rank(rank_name, tiebreakers)
+		PokerRules.HandRank.FOUR_OF_A_KIND:
+			if _has_tiebreaker(tiebreakers, 0):
+				return "%s (%s)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+			return rank_name
+		PokerRules.HandRank.FULL_HOUSE:
+			if _has_tiebreakers(tiebreakers, 2):
+				return "%s (%s over %s)" % [
+					rank_name,
+					_rank_label(_tiebreaker(tiebreakers, 0)),
+					_rank_label(_tiebreaker(tiebreakers, 1)),
+				]
+			return rank_name
+		PokerRules.HandRank.FLUSH:
+			return _describe_high_card_rank(rank_name, tiebreakers)
+		PokerRules.HandRank.STRAIGHT:
+			return _describe_high_card_rank(rank_name, tiebreakers)
+		PokerRules.HandRank.THREE_OF_A_KIND:
+			if _has_tiebreaker(tiebreakers, 0):
+				return "%s (%s)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+			return rank_name
+		PokerRules.HandRank.TWO_PAIR:
+			if _has_tiebreakers(tiebreakers, 2):
+				return "%s (%s and %s)" % [
+					rank_name,
+					_rank_label(_tiebreaker(tiebreakers, 0)),
+					_rank_label(_tiebreaker(tiebreakers, 1)),
+				]
+			return rank_name
+		PokerRules.HandRank.ONE_PAIR:
+			if _has_tiebreaker(tiebreakers, 0):
+				return "%s (%s)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
+			return rank_name
+		PokerRules.HandRank.HIGH_CARD:
+			return _describe_high_card_rank(rank_name, tiebreakers)
+		_:
+			if tiebreakers.is_empty():
+				return rank_name
+			return "%s (%s)" % [rank_name, _rank_list(tiebreakers)]
+
+
+static func _describe_result_with_kicker(rank: int, rank_name: String, tiebreakers: Array) -> String:
 	match rank:
 		PokerRules.HandRank.STRAIGHT_FLUSH:
 			return "%s (%s high)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
@@ -281,6 +335,25 @@ static func _tiebreaker(tiebreakers: Array, index: int) -> int:
 		return 0
 
 	return tiebreakers[index]
+
+
+static func _has_tiebreaker(tiebreakers: Array, index: int) -> bool:
+	return index >= 0 and index < tiebreakers.size() and int(tiebreakers[index]) > 0
+
+
+static func _has_tiebreakers(tiebreakers: Array, amount: int) -> bool:
+	for index in range(amount):
+		if not _has_tiebreaker(tiebreakers, index):
+			return false
+
+	return true
+
+
+static func _describe_high_card_rank(rank_name: String, tiebreakers: Array) -> String:
+	if not _has_tiebreaker(tiebreakers, 0):
+		return rank_name
+
+	return "%s (%s high)" % [rank_name, _rank_label(_tiebreaker(tiebreakers, 0))]
 
 
 static func _rank_list(ranks: Array) -> String:
