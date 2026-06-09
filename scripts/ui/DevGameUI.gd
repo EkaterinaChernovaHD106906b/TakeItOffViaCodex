@@ -126,7 +126,7 @@ const OPPONENT_DISPLAY_NAMES := {
 const MAX_CLOTHING_LAYERS := 4
 const CLOTHING_CHIP_STEP := 250
 const MAX_LOG_EVENTS := 5
-const LAYER_LOSS_POPUP_SECONDS := 5
+const LAYER_LOSS_POPUP_SECONDS := 3
 
 @onready var phase_label: Label = %PhaseLabel
 @onready var pot_label: Label = %PotLabel
@@ -785,7 +785,7 @@ func _render_state(state: Dictionary) -> void:
 	_render_cards(player_cards, player.get("hole_cards", []), true)
 	_render_opponents(opponents, reveal_opponent_cards, phase != PokerRules.Phase.ROUND_OVER)
 	_render_cards(community_cards, state.get("community_cards", []), true, 5)
-	_update_buttons(phase, call_amount, blinds_posted, player_is_all_in, any_opponent_is_all_in)
+	_update_buttons(phase, call_amount, int(player.get("chips", 0)), blinds_posted, player_is_all_in, any_opponent_is_all_in)
 
 
 func _render_opponents(opponents: Array, show_faces: bool, include_committed_chips: bool) -> void:
@@ -1428,6 +1428,7 @@ func _display_suit(card_code: String) -> String:
 func _update_buttons(
 	phase: PokerRules.Phase,
 	call_amount: int,
+	player_chips: int,
 	blinds_posted: bool,
 	player_is_all_in: bool,
 	opponent_is_all_in: bool
@@ -1435,11 +1436,12 @@ func _update_buttons(
 	var is_round_over := phase == PokerRules.Phase.ROUND_OVER
 	var actions_disabled := is_round_over or not blinds_posted or player_is_all_in
 	var all_in_locked := player_is_all_in or opponent_is_all_in
+	var call_requires_all_in := call_amount > 0 and call_amount >= player_chips
 	fold_button.disabled = actions_disabled
 	check_button.disabled = actions_disabled or call_amount > 0
-	call_button.disabled = actions_disabled or call_amount == 0
+	call_button.disabled = actions_disabled or call_amount == 0 or call_requires_all_in
 	call_button.text = "Call %d" % call_amount if call_amount > 0 else "Call"
-	raise_button.disabled = actions_disabled or all_in_locked
+	raise_button.disabled = actions_disabled or all_in_locked or call_requires_all_in
 	all_in_button.disabled = actions_disabled or player_is_all_in
 	post_blinds_button.disabled = is_round_over or blinds_posted
 	new_round_button.disabled = not is_round_over

@@ -4,12 +4,12 @@ signal resume_requested
 
 const GAME_SCENE_PATH := "res://scenes/Game.tscn"
 const MENU_BUTTON_MIN_SIZE := Vector2(560, 64)
-const MENU_BUTTON_FONT_SIZE := 108
+const MENU_BUTTON_FONT_SIZE := 50
 const CREDITS_POPUP_SIZE := Vector2i(1366, 768)
 const CREDITS_BACKGROUND_PATH := "res://assets/background2.png"
 const CREDITS_FONT_PATH := "res://fonts/Lumierepolis-Regular.otf"
 const CREDITS_DIALOG_TITLE := "Developers Info"
-const CREDITS_DIALOG_TEXT := "Developer - easy going\n\nAssets - https://spicylyon.itch.io, GPT\n\nMusic - Suno"
+const CREDITS_DIALOG_TEXT := "Developer - easy going\n\nAssets - https://spicylyon.itch.io\n\nMusic - Suno"
 const POKER_RULES_DIALOG_TITLE := "Poker Rules"
 const POKER_RULES_DIALOG_TEXT := "Texas Hold'em Rules
 

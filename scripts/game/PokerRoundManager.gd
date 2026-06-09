@@ -38,6 +38,10 @@ var ai_raise_count := 0
 var rng := RandomNumberGenerator.new()
 
 
+func _init() -> void:
+	_setup_ai_profiles()
+
+
 func setup_match(player_chips: int = PokerRules.STARTING_CHIPS, opponent_chips: int = PokerRules.STARTING_CHIPS) -> void:
 	player = PokerPlayerStateScript.new("You", player_chips)
 	opponents = [
@@ -45,7 +49,15 @@ func setup_match(player_chips: int = PokerRules.STARTING_CHIPS, opponent_chips: 
 		PokerPlayerStateScript.new("AI 2", opponent_chips),
 	]
 	opponent = opponents[0]
+	_setup_ai_profiles()
 	start_new_round()
+
+
+func _setup_ai_profiles() -> void:
+	if ais.size() > 0:
+		ais[0].configure("cautious")
+	if ais.size() > 1:
+		ais[1].configure("aggressive")
 
 
 func start_new_round() -> void:
@@ -81,6 +93,14 @@ func post_blinds() -> void:
 	pot += opponents[big_blind_opponent_index].pay_chips(PokerRules.BIG_BLIND)
 	current_bet = PokerRules.BIG_BLIND
 	blinds_posted = true
+	if _force_low_chip_players_all_in():
+		if _finish_if_all_active_players_are_all_in():
+			return
+		if _finish_if_all_in_betting_is_closed():
+			return
+		if player.is_all_in:
+			_settle_unmatched_ai_bets_after_player_all_in()
+			return
 	player_updated.emit(get_state())
 
 
@@ -88,9 +108,11 @@ func player_action(action: PokerRules.Action, raise_amount: int = PokerRules.MIN
 	if phase == PokerRules.Phase.ROUND_OVER or not blinds_posted or player.is_all_in:
 		return
 
+	action = _normalize_player_action(action)
 	_apply_action(player, action, raise_amount)
 	var was_answering_ai_raise := awaiting_player_response
 	awaiting_player_response = false
+	_force_low_chip_players_all_in()
 	player_updated.emit(get_state())
 
 	if _finish_if_folded():
@@ -200,11 +222,13 @@ func _take_ai_turn(only_unmatched: bool = false) -> void:
 			call_amount,
 			call_amount == 0,
 			ai_player.chips,
-			phase
+			phase,
+			pot
 		)
-		action = _normalize_ai_action(action, call_amount)
+		action = _normalize_ai_action(ai_player, action, call_amount)
 		action = _normalize_capped_ai_raise_action(ai_player, action)
 		_apply_action(ai_player, action["action"], action["amount"])
+		_force_low_chip_players_all_in()
 		if action["action"] == PokerRules.Action.RAISE:
 			ai_raise_count += 1
 		action["actor"] = ai_player.display_name
@@ -227,6 +251,26 @@ func _apply_action(actor: PokerPlayerState, action: PokerRules.Action, amount: i
 		PokerRules.Action.ALL_IN:
 			pot += actor.pay_chips(actor.chips)
 			current_bet = maxi(current_bet, actor.current_bet)
+
+
+func _force_low_chip_players_all_in() -> bool:
+	var forced_any := _force_actor_all_in_if_below_minimum_bet(player)
+
+	for ai_player in opponents:
+		forced_any = _force_actor_all_in_if_below_minimum_bet(ai_player) or forced_any
+
+	return forced_any
+
+
+func _force_actor_all_in_if_below_minimum_bet(actor: PokerPlayerState) -> bool:
+	if actor.has_folded or actor.is_all_in:
+		return false
+	if actor.chips <= 0 or actor.chips >= PokerRules.MIN_RAISE:
+		return false
+
+	pot += actor.pay_chips(actor.chips)
+	current_bet = maxi(current_bet, actor.current_bet)
+	return true
 
 
 func _finish_if_folded() -> bool:
@@ -264,7 +308,7 @@ func _finish_if_all_in_betting_is_closed() -> bool:
 	for active_player in active_players:
 		if active_player.is_all_in:
 			has_all_in_player = true
-		if get_call_amount(active_player) > 0:
+		if not active_player.is_all_in and get_call_amount(active_player) > 0:
 			return false
 
 	if not has_all_in_player:
@@ -373,11 +417,31 @@ func _deal_remaining_community_cards() -> void:
 		_deal_community_cards(cards_to_deal)
 
 
-func _normalize_ai_action(action: Dictionary, call_amount: int) -> Dictionary:
+func _normalize_player_action(action: PokerRules.Action) -> PokerRules.Action:
+	var call_amount := get_call_amount(player)
+	if action == PokerRules.Action.CALL and call_amount > 0 and call_amount >= player.chips:
+		return PokerRules.Action.ALL_IN
+
+	return action
+
+
+func _normalize_ai_action(ai_player: PokerPlayerState, action: Dictionary, call_amount: int) -> Dictionary:
+	if action.get("action", PokerRules.Action.CHECK) == PokerRules.Action.CALL and call_amount > 0 and call_amount >= ai_player.chips:
+		return {
+			"action": PokerRules.Action.ALL_IN,
+			"amount": ai_player.chips,
+		}
+
 	if not _any_player_all_in():
 		return action
 
 	if action.get("action", PokerRules.Action.CHECK) == PokerRules.Action.RAISE:
+		if call_amount > 0 and call_amount >= ai_player.chips:
+			return {
+				"action": PokerRules.Action.ALL_IN,
+				"amount": ai_player.chips,
+			}
+
 		return {
 			"action": PokerRules.Action.CALL if call_amount > 0 else PokerRules.Action.CHECK,
 			"amount": call_amount,

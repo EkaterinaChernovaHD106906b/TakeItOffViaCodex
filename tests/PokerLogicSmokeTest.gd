@@ -5,6 +5,7 @@ const DeckScript := preload("res://scripts/poker/Deck.gd")
 const HandEvaluatorScript := preload("res://scripts/poker/HandEvaluator.gd")
 const PokerRoundManagerScript := preload("res://scripts/game/PokerRoundManager.gd")
 const PokerRulesScript := preload("res://scripts/poker/PokerRules.gd")
+const PokerAIScript := preload("res://scripts/ai/PokerAI.gd")
 
 
 func _init() -> void:
@@ -15,7 +16,14 @@ func _init() -> void:
 	failed = _test_describe_result_can_hide_kicker() or failed
 	failed = _test_round_start() or failed
 	failed = _test_busted_match_resets_chips() or failed
+	failed = _test_preflop_ai_can_fold_weak_call() or failed
+	failed = _test_preflop_ai_uses_pot_odds() or failed
+	failed = _test_turn_river_straight_or_flush_forces_ai_all_in() or failed
 	failed = _test_all_in_betting_closed_with_non_all_in_ai() or failed
+	failed = _test_low_player_chips_force_round_finish() or failed
+	failed = _test_low_opponent_chips_force_all_in() or failed
+	failed = _test_player_call_for_full_stack_becomes_all_in() or failed
+	failed = _test_ai_call_for_full_stack_becomes_all_in() or failed
 	failed = _test_capped_ai_raise_becomes_all_in() or failed
 
 	quit(1 if failed else 0)
@@ -158,6 +166,64 @@ func _test_busted_match_resets_chips() -> bool:
 	return false
 
 
+func _test_preflop_ai_can_fold_weak_call() -> bool:
+	var ai := PokerAIScript.new()
+	ai.bluff_chance = 0.0
+	var action := ai.decide_action(
+		_cards(["2C", "7D"]),
+		[],
+		PokerRulesScript.BIG_BLIND,
+		false,
+		PokerRulesScript.STARTING_CHIPS,
+		PokerRulesScript.Phase.PRE_FLOP
+	)
+
+	if action["action"] != PokerRulesScript.Action.FOLD:
+		return _fail("Weak preflop hand should be able to fold when facing a call.")
+
+	return false
+
+
+func _test_preflop_ai_uses_pot_odds() -> bool:
+	var ai := PokerAIScript.new()
+	ai.bluff_chance = 0.0
+	var action := ai.decide_action(
+		_cards(["2C", "7D"]),
+		[],
+		PokerRulesScript.SMALL_BLIND,
+		false,
+		PokerRulesScript.STARTING_CHIPS,
+		PokerRulesScript.Phase.PRE_FLOP,
+		300
+	)
+
+	if action["action"] != PokerRulesScript.Action.CALL:
+		return _fail("Cheap preflop call into a large pot should be allowed by pot odds.")
+
+	return false
+
+
+func _test_turn_river_straight_or_flush_forces_ai_all_in() -> bool:
+	var ai := PokerAIScript.new()
+	ai.bluff_chance = 0.0
+	var action := ai.decide_action(
+		_cards(["AS", "9S"]),
+		_cards(["2S", "4S", "7S", "KD", "3C"]),
+		0,
+		true,
+		640,
+		PokerRulesScript.Phase.RIVER,
+		420
+	)
+
+	if action["action"] != PokerRulesScript.Action.ALL_IN:
+		return _fail("AI should force all-in with a made flush on river.")
+	if action["amount"] != 640:
+		return _fail("Forced turn/river all-in should use all available chips.")
+
+	return false
+
+
 func _test_all_in_betting_closed_with_non_all_in_ai() -> bool:
 	var manager := PokerRoundManagerScript.new()
 	manager.start_new_round()
@@ -165,10 +231,10 @@ func _test_all_in_betting_closed_with_non_all_in_ai() -> bool:
 	manager.blinds_posted = true
 	manager.community_cards = _cards(["AS", "KD", "7C", "2H"])
 	manager.current_bet = 1000
-	manager.pot = 3000
+	manager.pot = 2860
 
 	manager.player.chips = 0
-	manager.player.current_bet = 1000
+	manager.player.current_bet = 860
 	manager.player.is_all_in = true
 
 	manager.opponents[0].chips = 340
@@ -186,6 +252,104 @@ func _test_all_in_betting_closed_with_non_all_in_ai() -> bool:
 		return _fail("Closed all-in betting should finish the round even if one AI still has chips.")
 	if state["community_cards"].size() != PokerRulesScript.MAX_COMMUNITY_CARDS:
 		return _fail("Closed all-in betting should deal remaining community cards before showdown.")
+
+	return false
+
+
+func _test_low_player_chips_force_round_finish() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	manager.phase = PokerRulesScript.Phase.TURN
+	manager.blinds_posted = true
+	manager.community_cards = _cards(["AS", "KD", "7C", "2H"])
+	manager.current_bet = 100
+	manager.pot = 300
+
+	manager.player.chips = PokerRulesScript.MIN_RAISE - 5
+	manager.player.current_bet = 100
+	manager.player.is_all_in = false
+
+	for opponent in manager.opponents:
+		opponent.chips = 800
+		opponent.current_bet = 115
+		opponent.is_all_in = false
+
+	if not manager._force_low_chip_players_all_in():
+		return _fail("Player with chips below the minimum raise should be forced all-in.")
+	if manager.player.chips != 0 or not manager.player.is_all_in:
+		return _fail("Forced low-chip player should spend remaining chips and become all-in.")
+	if not manager._finish_if_all_in_betting_is_closed():
+		return _fail("Forced low-chip all-in should close betting when opponents already cover it.")
+
+	var state := manager.get_state()
+	if state["phase"] != PokerRulesScript.Phase.ROUND_OVER:
+		return _fail("Forced low-chip all-in should finish the round.")
+	if state["community_cards"].size() != PokerRulesScript.MAX_COMMUNITY_CARDS:
+		return _fail("Forced low-chip all-in should deal remaining community cards.")
+
+	return false
+
+
+func _test_low_opponent_chips_force_all_in() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	manager.phase = PokerRulesScript.Phase.FLOP
+	manager.blinds_posted = true
+	manager.community_cards = _cards(["AS", "KD", "7C"])
+	manager.current_bet = 100
+	manager.pot = 250
+
+	manager.player.chips = 600
+	manager.player.current_bet = 100
+	manager.player.is_all_in = false
+
+	manager.opponents[0].chips = PokerRulesScript.MIN_RAISE - 5
+	manager.opponents[0].current_bet = 100
+	manager.opponents[0].is_all_in = false
+
+	manager.opponents[1].chips = 500
+	manager.opponents[1].current_bet = 115
+	manager.opponents[1].is_all_in = false
+
+	if not manager._force_low_chip_players_all_in():
+		return _fail("Opponent with chips below the minimum raise should be forced all-in.")
+	if manager.opponents[0].chips != 0 or not manager.opponents[0].is_all_in:
+		return _fail("Forced low-chip opponent should spend remaining chips and become all-in.")
+	if manager.current_bet != 115:
+		return _fail("Forced low-chip opponent should update current bet with their final chips.")
+
+	return false
+
+
+func _test_player_call_for_full_stack_becomes_all_in() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	manager.current_bet = 100
+	manager.player.current_bet = 0
+	manager.player.chips = 100
+
+	var action := manager._normalize_player_action(PokerRulesScript.Action.CALL)
+	if action != PokerRulesScript.Action.ALL_IN:
+		return _fail("Player call for the full stack should become all in.")
+
+	return false
+
+
+func _test_ai_call_for_full_stack_becomes_all_in() -> bool:
+	var manager := PokerRoundManagerScript.new()
+	manager.start_new_round()
+	var ai_player = manager.opponents[0]
+	ai_player.current_bet = 0
+	ai_player.chips = 100
+
+	var action := manager._normalize_ai_action(ai_player, {
+		"action": PokerRulesScript.Action.CALL,
+		"amount": 100,
+	}, 100)
+	if action.get("action") != PokerRulesScript.Action.ALL_IN:
+		return _fail("AI call for the full stack should become all in.")
+	if action.get("amount") != 100:
+		return _fail("AI all in should use all available chips.")
 
 	return false
 
