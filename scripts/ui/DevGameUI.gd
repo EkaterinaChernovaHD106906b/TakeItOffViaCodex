@@ -127,6 +127,7 @@ const MAX_CLOTHING_LAYERS := 4
 const CLOTHING_CHIP_STEP := 250
 const MAX_LOG_EVENTS := 5
 const LAYER_LOSS_POPUP_SECONDS := 3
+const OUTFIT_PROGRESS_SAVE_PATH := "user://outfit_progress.cfg"
 
 @onready var phase_label: Label = %PhaseLabel
 @onready var pot_label: Label = %PotLabel
@@ -212,6 +213,7 @@ func _ready() -> void:
 	_connect_buttons()
 	_style_action_buttons()
 	_update_add_fun_button_text()
+	_load_outfit_progress()
 	_start_round()
 
 
@@ -532,7 +534,7 @@ func _start_round() -> void:
 	_play_sfx(SOUND_DECK_RIFFLE)
 	reveal_opponent_cards = false
 	if _match_is_busted_before_new_round():
-		_reset_opponent_outfits_to_default()
+		_reset_opponent_outfits_for_new_match()
 	round_manager.start_new_round()
 	_clear_log()
 	_set_all_opponent_reactions("neutral")
@@ -666,11 +668,77 @@ func _match_is_busted_before_new_round() -> bool:
 	return false
 
 
-func _reset_opponent_outfits_to_default() -> void:
+func _reset_opponent_outfits_for_new_match() -> void:
 	for opponent_name in opponent_clothing_stages.keys():
-		opponent_outfit_indices[opponent_name] = 0
+		opponent_outfit_indices[opponent_name] = _next_unlocked_outfit_index(opponent_name)
 		opponent_clothing_stages[opponent_name] = 1
 		opponent_outfit_baseline_chips[opponent_name] = PokerRules.STARTING_CHIPS
+
+	_save_outfit_progress()
+
+
+func _next_unlocked_outfit_index(opponent_name: String) -> int:
+	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
+	if outfit_sets.is_empty():
+		return 0
+
+	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
+	var available_count := clampi(unlocked_count, 1, outfit_sets.size())
+	var current_index: int = opponent_outfit_indices.get(opponent_name, 0)
+	return (current_index + 1) % available_count
+
+
+func _load_outfit_progress() -> void:
+	var config := ConfigFile.new()
+	if config.load(OUTFIT_PROGRESS_SAVE_PATH) != OK:
+		return
+
+	outfit_unlock_turn = maxi(int(config.get_value("progress", "outfit_unlock_turn", outfit_unlock_turn)), 0)
+
+	for opponent_name in OPPONENT_OUTFIT_SETS.keys():
+		var unlocked_count := int(config.get_value("unlocked", opponent_name, unlocked_outfit_counts.get(opponent_name, 1)))
+		unlocked_count = _clamped_unlocked_outfit_count(opponent_name, unlocked_count)
+		unlocked_outfit_counts[opponent_name] = unlocked_count
+
+		var default_outfit_index := _latest_unlocked_outfit_index(opponent_name)
+		var outfit_index := int(config.get_value("current", opponent_name, default_outfit_index))
+		opponent_outfit_indices[opponent_name] = clampi(outfit_index, 0, unlocked_count - 1)
+		opponent_clothing_stages[opponent_name] = 1
+		opponent_outfit_baseline_chips[opponent_name] = PokerRules.STARTING_CHIPS
+
+
+func _save_outfit_progress() -> void:
+	var config := ConfigFile.new()
+	config.set_value("progress", "outfit_unlock_turn", outfit_unlock_turn)
+
+	for opponent_name in OPPONENT_OUTFIT_SETS.keys():
+		var unlocked_count := _clamped_unlocked_outfit_count(opponent_name, unlocked_outfit_counts.get(opponent_name, 1))
+		unlocked_outfit_counts[opponent_name] = unlocked_count
+		opponent_outfit_indices[opponent_name] = clampi(opponent_outfit_indices.get(opponent_name, 0), 0, unlocked_count - 1)
+
+		config.set_value("unlocked", opponent_name, unlocked_count)
+		config.set_value("current", opponent_name, opponent_outfit_indices[opponent_name])
+
+	var error := config.save(OUTFIT_PROGRESS_SAVE_PATH)
+	if error != OK:
+		push_warning("Could not save outfit progress: %s" % error)
+
+
+func _clamped_unlocked_outfit_count(opponent_name: String, unlocked_count: int) -> int:
+	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
+	if outfit_sets.is_empty():
+		return 1
+
+	return clampi(unlocked_count, 1, outfit_sets.size())
+
+
+func _latest_unlocked_outfit_index(opponent_name: String) -> int:
+	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
+	if outfit_sets.is_empty():
+		return 0
+
+	var unlocked_count := _clamped_unlocked_outfit_count(opponent_name, unlocked_outfit_counts.get(opponent_name, 1))
+	return unlocked_count - 1
 
 
 func _react_to_ai_action(action: Dictionary) -> void:
@@ -709,13 +777,17 @@ func _unlock_next_outfit() -> void:
 
 	var outfit_sets: Array = OPPONENT_OUTFIT_SETS.get(opponent_name, [])
 	if outfit_sets.size() <= 1:
+		_save_outfit_progress()
 		return
 
 	var unlocked_count: int = unlocked_outfit_counts.get(opponent_name, 1)
 	if unlocked_count < outfit_sets.size():
 		var unlocked_outfit_index := unlocked_count
 		unlocked_outfit_counts[opponent_name] = unlocked_count + 1
+		_save_outfit_progress()
 		_request_outfit_unlocked_popup("%s/layer1.png" % outfit_sets[unlocked_outfit_index])
+	else:
+		_save_outfit_progress()
 
 	if not last_state.is_empty():
 		_render_state(last_state)
